@@ -66,7 +66,7 @@ export default function AuthPage({ mode = "login" }: { mode?: "login" | "registe
           <h1 className="max-w-2xl text-5xl font-semibold leading-[1.05] tracking-tight xl:text-6xl">Cada nome importa. Cada presença também.</h1>
           <p className="mt-7 max-w-lg text-lg leading-8 text-[#c4ced8]">Um espaço claro para organizar discipulado, presença e os próximos gestos de cuidado com os jovens.</p>
         </div>
-        <div className="relative flex items-center gap-3 text-sm text-[#c4ced8]"><ShieldCheck className="h-5 w-5 text-[#d5a77c]" /> Acesso protegido para a equipe da igreja</div>
+        <div className="relative flex items-center gap-3 text-sm text-[#c4ced8]"><ShieldCheck className="h-5 w-5 text-[#d5a77c]" /> Acesso protegido para a equipe da igreja Missionária Portais Eternos</div>
       </section>
 
       <section className="flex min-h-screen items-center justify-center px-5 py-10 sm:px-8">

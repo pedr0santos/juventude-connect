@@ -57,64 +57,6 @@ import {
   YAxis,
 } from "recharts";
 
-const fallbackYouth = [
-  {
-    id: 1,
-    name: "Gabriel Almeida",
-    birthDate: "2004-08-19",
-    discipulatorName: "João Martins",
-    whatsapp: "(11) 99821-2210",
-    relationshipStatus: "active",
-  },
-  {
-    id: 2,
-    name: "Mariana Costa",
-    birthDate: "2006-08-23",
-    discipulatorName: "Ana Paula",
-    whatsapp: "(11) 99751-7720",
-    relationshipStatus: "active",
-  },
-  {
-    id: 3,
-    name: "Lucas Ferreira",
-    birthDate: "2003-08-27",
-    discipulatorName: "João Martins",
-    whatsapp: "(11) 99142-0804",
-    relationshipStatus: "active",
-  },
-  {
-    id: 4,
-    name: "Beatriz Lima",
-    birthDate: "2007-09-02",
-    discipulatorName: "Rafael Souza",
-    whatsapp: "(11) 99601-5448",
-    relationshipStatus: "active",
-  },
-];
-const fallbackDiscipulators = [
-  {
-    id: 1,
-    name: "João Martins",
-    whatsapp: "(11) 99888-1000",
-    status: "active",
-    youthCount: 12,
-  },
-  {
-    id: 2,
-    name: "Ana Paula",
-    whatsapp: "(11) 99731-3002",
-    status: "active",
-    youthCount: 9,
-  },
-  {
-    id: 3,
-    name: "Rafael Souza",
-    whatsapp: "(11) 99111-4030",
-    status: "active",
-    youthCount: 7,
-  },
-];
-
 function initials(name: string) {
   return name
     .split(" ")
@@ -338,26 +280,17 @@ export default function Home() {
     onError: error => toast.error(error.message),
   });
   const data = dashboard.data ?? {
-    youthCount: 28,
-    activeYouthCount: 24,
-    discipulatorCount: 6,
-    birthdays: [fallbackYouth[0]],
-    upcoming: fallbackYouth.slice(1),
-    pendingFollowUps: 4,
-    lastEvent: { eventDate: "2026-08-16", eventType: "Culto de celebração" },
-    recentAbsences: [
-      {
-        id: 1,
-        youth: "Gabriel Almeida",
-        discipulator: "João Martins",
-        status: "pending",
-      },
-    ],
+    youthCount: 0,
+    activeYouthCount: 0,
+    discipulatorCount: 0,
+    birthdays: [],
+    upcoming: [],
+    pendingFollowUps: 0,
+    lastEvent: null,
+    recentAbsences: [],
   };
-  const youths = youthsQuery.data?.length ? youthsQuery.data : fallbackYouth;
-  const discipulators = discipulatorsQuery.data?.length
-    ? discipulatorsQuery.data
-    : fallbackDiscipulators;
+  const youths = youthsQuery.data ?? [];
+  const discipulators = discipulatorsQuery.data ?? [];
   const attendance = attendanceQuery.data?.length
     ? attendanceQuery.data
     : youths.map(youth => ({
@@ -945,20 +878,7 @@ function Dashboard({
           <CardContent className="space-y-2">
             {(data.recentAbsences?.length
               ? data.recentAbsences
-              : [
-                  {
-                    youth: "Gabriel Almeida",
-                    discipulator: "João Martins",
-                    createdAt: "2026-08-17",
-                    status: "pending",
-                  },
-                  {
-                    youth: "Mariana Costa",
-                    discipulator: "Ana Paula",
-                    createdAt: "2026-08-16",
-                    status: "contacted",
-                  },
-                ]
+              : []
             ).map((item: any, index: number) => (
               <div
                 key={index}
@@ -2310,46 +2230,9 @@ function MessagesPage() {
             <span>Tipo</span>
             <span>Status</span>
           </div>
-          {[
-            {
-              name: "Gabriel Almeida",
-              type: "Aniversário",
-              status: "Pendente",
-              time: "Hoje, 09:42",
-            },
-            {
-              name: "Mariana Costa",
-              type: "Falta no culto",
-              status: "Enviada",
-              time: "Ontem, 21:10",
-            },
-            {
-              name: "Lucas Ferreira",
-              type: "Falta no culto",
-              status: "Enviada",
-              time: "16 ago, 19:35",
-            },
-          ].map(item => (
-            <div
-              key={item.name + item.type}
-              className="grid grid-cols-[1fr_140px_140px] items-center border-b border-[#f2f3f4] px-5 py-4 text-sm last:border-0"
-            >
-              <div>
-                <p className="font-semibold">{item.name}</p>
-                <p className="text-xs text-[#9aa1aa]">{item.time}</p>
-              </div>
-              <span className="text-[#6e7783]">{item.type}</span>
-              <Badge
-                className={
-                  item.status === "Enviada"
-                    ? "w-fit border-0 bg-[#edf5f0] text-[#4f8069]"
-                    : "w-fit border-0 bg-[#fff3e9] text-[#a16d3e]"
-                }
-              >
-                {item.status}
-              </Badge>
-            </div>
-          ))}
+          <div className="p-8 text-center text-sm text-[#8a929d]">
+            Nenhuma mensagem registrada ainda.
+          </div>
         </CardContent>
       </Card>
     </div>
