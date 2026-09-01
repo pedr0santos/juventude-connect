@@ -14,6 +14,13 @@ import { trpc } from "@/lib/trpc";
 import { startLogin } from "@/const";
 import { DiscipulatorEditDialog } from "@/components/DiscipulatorEditDialog";
 import {
+  AccountLinkDialog,
+  DiscipulatorCreateDialog,
+  YouthCreateDialog,
+  YouthReassignDialog,
+  YouthWhatsappEditDialog,
+} from "@/components/ManagementDialogs";
+import {
   formatBirthdayDate,
   isBirthdayToday,
   isBirthdayWithinNextDays,
@@ -34,12 +41,10 @@ import {
   Clock3,
   HeartHandshake,
   MessageCircle,
-  MoreHorizontal,
   Search,
   Send,
   Settings2,
   Sparkles,
-  UserRound,
   Users,
   X,
   XCircle,
@@ -479,31 +484,10 @@ export default function Home() {
               setDiscipulatorFilter={setDiscipulatorFilter}
               discipulators={discipulators}
               onBirthday={handleManualBirthday}
-              onEditWhatsapp={(id: number, current: string) =>
-                updateWhatsapp.mutate({
-                  id,
-                  whatsapp:
-                    window.prompt("WhatsApp do jovem", current) ?? current,
-                })
+              onCreate={(data: any) => createYouth.mutate(data)}
+              onUpdateWhatsapp={(id: number, whatsapp: string) =>
+                updateWhatsapp.mutate({ id, whatsapp })
               }
-              onCreate={() => {
-                const name = window.prompt("Nome completo do jovem");
-                if (name)
-                  createYouth.mutate({
-                    name,
-                    birthDate:
-                      window.prompt("Data de nascimento (AAAA-MM-DD)") ??
-                      "2000-01-01",
-                    whatsapp: window.prompt("WhatsApp") ?? "",
-                    discipulatorId: Number(
-                      window.prompt("ID do discipulador") ?? 1
-                    ),
-                    discipleshipStartDate: new Date()
-                      .toISOString()
-                      .slice(0, 10),
-                    relationshipStatus: "active",
-                  });
-              }}
               onImport={(file: File) => {
                 const reader = new FileReader();
                 reader.onload = () => {
@@ -547,15 +531,7 @@ export default function Home() {
               onLinkAccount={(userId: number, discipulatorId: number) =>
                 linkAccount.mutate({ userId, discipulatorId })
               }
-              onCreate={() => {
-                const name = window.prompt("Nome completo do discipulador");
-                if (name)
-                  createDiscipulator.mutate({
-                    name,
-                    whatsapp: window.prompt("WhatsApp") ?? "",
-                    status: "active",
-                  });
-              }}
+              onCreate={(data: any) => createDiscipulator.mutate(data)}
             />
           )}
           {page === "presenca" && (
@@ -590,18 +566,18 @@ export default function Home() {
           {page === "notificacoes" && (
             <NotificationsPage
               rows={notificationsQuery.data ?? []}
-              onSend={(id: number) => {
-                const template = window.prompt(
-                  "Nome exato do template aprovado para falta",
-                  "notificacao_falta"
-                );
-                if (template)
-                  sendAbsenceNotification.mutate({
-                    id,
-                    templateName: template,
-                    languageCode: "pt_BR",
-                  });
-              }}
+                onSend={(id: number) => {
+                  const template = window.prompt(
+                    "Nome exato do template aprovado para falta",
+                    "notificacao_falta"
+                  );
+                  if (template)
+                    sendAbsenceNotification.mutate({
+                      id,
+                      templateName: template,
+                      languageCode: "pt_BR",
+                    });
+                }}
             />
           )}
           {page === "relatorios" && (
@@ -1090,9 +1066,9 @@ function YouthPage({
   setDiscipulatorFilter,
   discipulators,
   onBirthday,
-  onEditWhatsapp,
-  onReassign,
   onCreate,
+  onUpdateWhatsapp,
+  onReassign,
   onImport,
 }: any) {
   return (
@@ -1120,12 +1096,10 @@ function YouthPage({
                 }}
               />
             </label>
-            <Button
-              onClick={onCreate}
-              className="w-full justify-center rounded-full bg-[#18212f] text-white hover:bg-[#2e3a4d] sm:w-auto"
-            >
-              Adicionar jovem
-            </Button>
+            <YouthCreateDialog
+              discipulators={discipulators}
+              onCreate={onCreate}
+            />
           </div>
         </div>
         <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
@@ -1226,36 +1200,18 @@ function YouthPage({
                     >
                       <MessageCircle className="h-4 w-4 text-[#a16d3e]" />
                     </Button>
-                    <Button
-                      onClick={() =>
-                        onEditWhatsapp(youth.id, youth.whatsapp ?? "")
+                    <YouthWhatsappEditDialog
+                      current={youth.whatsapp ?? ""}
+                      onUpdate={whatsapp => onUpdateWhatsapp(youth.id, whatsapp)}
+                    />
+                    <YouthReassignDialog
+                      youthName={youth.name}
+                      currentId={youth.discipulatorId}
+                      discipulators={discipulators}
+                      onReassign={discipulatorId =>
+                        onReassign(youth.id, discipulatorId)
                       }
-                      variant="ghost"
-                      size="icon"
-                      title="Editar WhatsApp"
-                    >
-                      <MoreHorizontal className="h-4 w-4" />
-                    </Button>
-                    <Button
-                      onClick={() => {
-                        const selected = window.prompt(
-                          "ID do novo discipulador (deixe vazio para remover)",
-                          youth.discipulatorId
-                            ? String(youth.discipulatorId)
-                            : ""
-                        );
-                        if (selected !== null)
-                          onReassign(
-                            youth.id,
-                            selected.trim() ? Number(selected) : null
-                          );
-                      }}
-                      variant="ghost"
-                      size="icon"
-                      title="Corrigir discipulador"
-                    >
-                      <UserRound className="h-4 w-4 text-[#536a7f]" />
-                    </Button>
+                    />
                   </td>
                 </tr>
               ))}
@@ -1287,12 +1243,7 @@ function DiscipulatorsPage({
             Pessoas responsáveis por caminhar de perto.
           </p>
         </div>
-        <Button
-          onClick={onCreate}
-          className="w-full justify-center rounded-full bg-[#18212f] text-white hover:bg-[#2e3a4d] sm:w-auto"
-        >
-          Novo discipulador
-        </Button>
+        <DiscipulatorCreateDialog onCreate={onCreate} />
       </div>
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         {discipulators.map((item: any) => (
@@ -1374,22 +1325,14 @@ function DiscipulatorsPage({
                         : "Aguardando vínculo"}
                   </p>
                 </div>
-                <Button
-                  variant="outline"
-                  className="rounded-xl"
-                  onClick={() => {
-                    const selected = window.prompt(
-                      "ID do discipulador para esta conta",
-                      account.discipulatorId
-                        ? String(account.discipulatorId)
-                        : ""
-                    );
-                    if (selected !== null)
-                      onLinkAccount(account.id, Number(selected));
-                  }}
-                >
-                  Vincular discipulador
-                </Button>
+                <AccountLinkDialog
+                  accountName={account.name || account.email || "esta conta"}
+                  currentId={account.discipulatorId}
+                  discipulators={discipulators}
+                  onLink={discipulatorId =>
+                    onLinkAccount(account.id, discipulatorId)
+                  }
+                />
               </div>
             ))
           ) : (
