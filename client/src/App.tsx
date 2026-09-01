@@ -5,10 +5,15 @@ import { Route, Switch } from "wouter";
 import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
+import AuthPage from "./pages/AuthPage";
 
 function Router() {
   return <Switch>
     <Route path="/" component={Home} />
+    <Route path="/login" component={() => <AuthPage mode="login" />} />
+    <Route path="/cadastro" component={() => <AuthPage mode="register" />} />
+    <Route path="/recuperar-senha" component={() => <AuthPage mode="recover" />} />
+    <Route path="/redefinir-senha" component={() => <AuthPage mode="reset" />} />
     <Route path="/admin" component={Home} />
     <Route path="/painel" component={Home} />
     <Route path="/jovens" component={Home} />

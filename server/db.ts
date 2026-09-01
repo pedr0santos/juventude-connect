@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, absenceNotifications, appSettings, attendance, discipulators, followUps, messageLogs, users, worshipEvents, youths } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import { sortUpcomingBirthdays } from "../shared/birthday";
+import { hashPassword, normalizeEmail, validatePassword } from "./passwords";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -30,6 +31,17 @@ export async function getUserByOpenId(openId: string) {
   const db = await getDb(); if (!db) return undefined;
   const result = await db.select().from(users).where(eq(users.openId, openId)).limit(1);
   return result[0];
+}
+
+export async function bootstrapAdmin() {
+  if (!ENV.adminEmail || !ENV.adminPassword) return;
+  if (!validatePassword(ENV.adminPassword)) throw new Error("ADMIN_PASSWORD must have at least 8 characters.");
+  const db = await getDb(); if (!db) return;
+  const email = normalizeEmail(ENV.adminEmail);
+  const [existing] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+  if (existing) return;
+  await db.insert(users).values({ name: "Administrador", email, passwordHash: await hashPassword(ENV.adminPassword), accountStatus: "active", loginMethod: "local", role: "admin" });
+  console.log(`[Auth] Initial administrator created for ${email}.`);
 }
 
 export async function getDashboardData(discipulatorId?: number) {

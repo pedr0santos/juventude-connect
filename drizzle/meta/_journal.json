@@ -29,6 +29,13 @@
       "when": 1787161235589,
       "tag": "0003_aberrant_nightcrawler",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "5",
+      "when": 1788272264297,
+      "tag": "0004_local_auth",
+      "breakpoints": true
     }
   ]
 }

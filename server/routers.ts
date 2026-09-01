@@ -11,6 +11,8 @@ import { COOKIE_NAME } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
+import { consumePasswordResetToken, createPasswordResetToken, createSession, hashPassword, normalizeEmail, revokeSession, revokeUserSessions, toPublicUser, validatePassword, verifyPassword } from "./auth";
+import { sendPasswordResetEmail } from "./mailer";
 
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN", message: "Acesso restrito ao administrador." });
@@ -26,8 +28,92 @@ const youthInput = z.object({ name: z.string().min(2), birthDate: z.string(), wh
 
 export const appRouter = router({
   system: systemRouter,
-  auth: router({ me: publicProcedure.query(opts => opts.ctx.user), logout: publicProcedure.mutation(({ ctx }) => { ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 }); return { success: true } as const; }) }),
-  accounts: router({ list: adminProcedure.query(async () => { const db = await getDb(); if (!db) return []; return db.select({ id: users.id, name: users.name, email: users.email, role: users.role, discipulatorId: users.discipulatorId }).from(users).orderBy(users.name); }), linkDiscipulator: adminProcedure.input(z.object({ userId: z.number().int(), discipulatorId: z.number().int().nullable() })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); await db.update(users).set({ discipulatorId: input.discipulatorId, role: input.discipulatorId ? "discipulator" : "user" }).where(eq(users.id, input.userId)); return { success: true }; }) }),
+  auth: router({
+    me: publicProcedure.query(opts => opts.ctx.user ? toPublicUser(opts.ctx.user) : null),
+    login: publicProcedure.input(z.object({ email: z.string().email(), password: z.string().min(1) })).mutation(async ({ input, ctx }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Banco de dados indisponível." });
+      const email = normalizeEmail(input.email);
+      const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+      if (!user || !user.passwordHash || !(await verifyPassword(input.password, user.passwordHash))) throw new TRPCError({ code: "UNAUTHORIZED", message: "E-mail ou senha inválidos." });
+      if (user.accountStatus === "pending") throw new TRPCError({ code: "FORBIDDEN", message: "Sua conta aguarda aprovação do administrador." });
+      if (user.accountStatus === "suspended") throw new TRPCError({ code: "FORBIDDEN", message: "Sua conta está suspensa." });
+      const token = await createSession(user.id);
+      ctx.res.cookie(COOKIE_NAME, token, { ...getSessionCookieOptions(ctx.req), maxAge: 1000 * 60 * 60 * 24 * 7 });
+      return toPublicUser(user);
+    }),
+    register: publicProcedure.input(z.object({ name: z.string().trim().min(2).max(180), email: z.string().email(), password: z.string().min(8).max(128), passwordConfirmation: z.string() })).mutation(async ({ input }) => {
+      if (!validatePassword(input.password) || input.password !== input.passwordConfirmation) throw new TRPCError({ code: "BAD_REQUEST", message: "Confira a senha e a confirmação. A senha deve ter pelo menos 8 caracteres." });
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Banco de dados indisponível." });
+      const email = normalizeEmail(input.email);
+      const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
+      if (existing) throw new TRPCError({ code: "CONFLICT", message: "Não foi possível criar a conta com esses dados." });
+      await db.insert(users).values({ name: input.name, email, passwordHash: await hashPassword(input.password), accountStatus: "pending", loginMethod: "local", role: "user" });
+      return { success: true } as const;
+    }),
+    logout: publicProcedure.mutation(async ({ ctx }) => {
+      const cookies = ctx.req.headers.cookie ? ctx.req.headers.cookie.split(";").map(value => value.trim()) : [];
+      const sessionToken = cookies.find(value => value.startsWith(`${COOKIE_NAME}=`))?.slice(COOKIE_NAME.length + 1);
+      await revokeSession(sessionToken);
+      ctx.res.clearCookie(COOKIE_NAME, { ...getSessionCookieOptions(ctx.req), maxAge: -1 });
+      return { success: true } as const;
+    }),
+    changePassword: protectedProcedure.input(z.object({ currentPassword: z.string().min(1), newPassword: z.string().min(8).max(128), newPasswordConfirmation: z.string() })).mutation(async ({ input, ctx }) => {
+      if (!ctx.user.passwordHash || !(await verifyPassword(input.currentPassword, ctx.user.passwordHash))) throw new TRPCError({ code: "BAD_REQUEST", message: "A senha atual está incorreta." });
+      if (!validatePassword(input.newPassword) || input.newPassword !== input.newPasswordConfirmation) throw new TRPCError({ code: "BAD_REQUEST", message: "Confira a nova senha e a confirmação." });
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Banco de dados indisponível." });
+      await db.update(users).set({ passwordHash: await hashPassword(input.newPassword) }).where(eq(users.id, ctx.user.id));
+      return { success: true } as const;
+    }),
+    requestPasswordReset: publicProcedure.input(z.object({ email: z.string().email() })).mutation(async ({ input }) => {
+      const db = await getDb();
+      if (db) {
+        const [user] = await db.select({ id: users.id, email: users.email }).from(users).where(eq(users.email, normalizeEmail(input.email))).limit(1);
+        if (user?.email) {
+          const token = await createPasswordResetToken(user.id);
+          await sendPasswordResetEmail(user.email, token);
+        }
+      }
+      return { success: true, message: "Se houver uma conta para este e-mail, enviaremos as instruções de recuperação." } as const;
+    }),
+    resetPassword: publicProcedure.input(z.object({ token: z.string().min(20), password: z.string().min(8).max(128), passwordConfirmation: z.string() })).mutation(async ({ input }) => {
+      if (!validatePassword(input.password) || input.password !== input.passwordConfirmation) throw new TRPCError({ code: "BAD_REQUEST", message: "Confira a nova senha e a confirmação." });
+      const userId = await consumePasswordResetToken(input.token);
+      if (!userId) throw new TRPCError({ code: "BAD_REQUEST", message: "Este link é inválido ou expirou." });
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Banco de dados indisponível." });
+      await db.update(users).set({ passwordHash: await hashPassword(input.password), accountStatus: "active" }).where(eq(users.id, userId));
+      await revokeUserSessions(userId);
+      return { success: true } as const;
+    }),
+  }),
+  accounts: router({
+    list: adminProcedure.query(async () => { const db = await getDb(); if (!db) return []; return db.select({ id: users.id, name: users.name, email: users.email, role: users.role, accountStatus: users.accountStatus, discipulatorId: users.discipulatorId, createdAt: users.createdAt }).from(users).orderBy(users.name); }),
+    create: adminProcedure.input(z.object({ name: z.string().trim().min(2).max(180), email: z.string().email(), password: z.string().min(8).max(128), role: z.enum(["user", "admin", "discipulator"]).default("user"), discipulatorId: z.number().int().positive().nullable().optional() })).mutation(async ({ input }) => {
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const email = normalizeEmail(input.email);
+      const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, email)).limit(1);
+      if (existing) throw new TRPCError({ code: "CONFLICT", message: "Este e-mail já está cadastrado." });
+      await db.insert(users).values({ name: input.name, email, passwordHash: await hashPassword(input.password), accountStatus: "active", loginMethod: "local", role: input.role, discipulatorId: input.discipulatorId ?? null });
+      return { success: true } as const;
+    }),
+    updateStatus: adminProcedure.input(z.object({ userId: z.number().int(), accountStatus: z.enum(["pending", "active", "suspended"]) })).mutation(async ({ input, ctx }) => {
+      if (input.userId === ctx.user.id && input.accountStatus !== "active") throw new TRPCError({ code: "BAD_REQUEST", message: "Você não pode desativar sua própria conta." });
+      const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+      const [target] = await db.select({ role: users.role }).from(users).where(eq(users.id, input.userId)).limit(1);
+      if (!target) throw new TRPCError({ code: "NOT_FOUND" });
+      if (target.role === "admin" && input.accountStatus !== "active") {
+        const [{ count }] = await db.select({ count: sql<number>`count(*)` }).from(users).where(and(eq(users.role, "admin"), eq(users.accountStatus, "active")));
+        if (Number(count) <= 1) throw new TRPCError({ code: "BAD_REQUEST", message: "O sistema precisa manter pelo menos um administrador ativo." });
+      }
+      await db.update(users).set({ accountStatus: input.accountStatus }).where(eq(users.id, input.userId));
+      if (input.accountStatus !== "active") await revokeUserSessions(input.userId);
+      return { success: true } as const;
+    }),
+    linkDiscipulator: adminProcedure.input(z.object({ userId: z.number().int(), discipulatorId: z.number().int().nullable() })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); await db.update(users).set({ discipulatorId: input.discipulatorId, role: input.discipulatorId ? "discipulator" : "user" }).where(eq(users.id, input.userId)); return { success: true }; }),
+  }),
   dashboard: linkedProcedure.query(({ ctx }) => getDashboardData(ctx.user.role === "discipulator" ? ctx.user.discipulatorId ?? undefined : undefined)),
   reports: router({ get: linkedProcedure.input(z.object({ startDate: z.string(), endDate: z.string(), eventType: z.string().optional(), discipulatorId: z.number().optional(), youthId: z.number().optional(), lowFrequencyThreshold: z.number().min(1).max(100).optional(), maxConsecutiveAbsences: z.number().int().min(1).max(20).optional() })).query(({ input, ctx }) => getReports(input, ctx.user.role === "discipulator" ? ctx.user.discipulatorId ?? undefined : undefined)) }),
   youths: router({
