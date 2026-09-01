@@ -8,7 +8,7 @@ O acesso é feito por e-mail e senha no próprio sistema. As senhas são armazen
 
 O cadastro público cria contas com status `pending`, que precisam ser aprovadas pelo administrador. Administradores também podem criar contas ativas, alterar status, definir o vínculo com discipulador e manter outros administradores ativos. O primeiro administrador é criado de forma idempotente por `ADMIN_EMAIL` e `ADMIN_PASSWORD`; essas variáveis devem ser removidas ou alteradas depois do bootstrap inicial.
 
-O fluxo de recuperação usa tokens de uso único com validade de 30 minutos e depende de SMTP configurado no servidor. Variáveis necessárias: `APP_BASE_URL`, `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASSWORD` e `SMTP_FROM`. A API responde de forma genérica para não revelar se um e-mail está cadastrado.
+O fluxo de recuperação usa tokens de uso único com validade de 30 minutos e depende do Resend configurado no servidor. Variáveis necessárias: `APP_BASE_URL`, `RESEND_API_KEY` e `RESEND_FROM`. A API responde de forma genérica para não revelar se um e-mail está cadastrado.
 
 As colunas e tabelas locais estão na migration `0004_local_auth`. O campo legado `users.openId` permanece temporariamente para permitir a conversão de contas Manus existentes; depois que todas tiverem senha local, ele poderá ser removido em uma migration futura.
 
