@@ -6,5 +6,3 @@ CREATE TABLE `discipulator_responsibles` (
   CONSTRAINT `discipulator_responsibles_id` PRIMARY KEY(`id`),
   CONSTRAINT `discipulator_responsibles_name_unique` UNIQUE(`name`)
 );
-ALTER TABLE `discipulators` ADD `responsibleId` int;
-INSERT INTO `discipulator_responsibles` (`name`) VALUES ('Mateus Damasceno'), ('Anna Carolina'), ('Rafael Antônio'), ('Gabriel Silva');

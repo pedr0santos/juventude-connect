@@ -1,0 +1,1 @@
+INSERT INTO `discipulator_responsibles` (`name`) VALUES ('Mateus Damasceno'), ('Anna Carolina'), ('Rafael Antônio'), ('Gabriel Silva');

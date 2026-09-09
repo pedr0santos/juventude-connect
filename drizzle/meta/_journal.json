@@ -36,6 +36,34 @@
       "when": 1788272264297,
       "tag": "0004_local_auth",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "5",
+      "when": 1788272264298,
+      "tag": "0005_profile_photos",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "5",
+      "when": 1788272264299,
+      "tag": "0006_discipulator_responsibles",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "5",
+      "when": 1788272264300,
+      "tag": "0007_discipulator_responsible_id",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "5",
+      "when": 1788272264301,
+      "tag": "0008_seed_discipulator_responsibles",
+      "breakpoints": true
     }
   ]
 }

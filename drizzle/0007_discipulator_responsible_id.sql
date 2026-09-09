@@ -1,0 +1,1 @@
+ALTER TABLE `discipulators` ADD `responsibleId` int;
