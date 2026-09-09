@@ -18,15 +18,22 @@ function field(row: Record<string, unknown>, names: string[]) {
   return text(entries.find(([key]) => wanted.includes(normalizeImportText(key)))?.[1]);
 }
 
-function parseBirthDate(value: string) {
+function excelSerialDate(serial: number) {
+  const wholeDays = Math.floor(serial);
+  const milliseconds = Date.UTC(1899, 11, 30) + wholeDays * 24 * 60 * 60 * 1000;
+  const date = new Date(milliseconds);
+  if (!Number.isFinite(milliseconds) || Number.isNaN(date.getTime())) throw new Error("data de nascimento inválida");
+  return calendarDate(`${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`);
+}
+
+export function parseBirthDate(value: string) {
   if (!value) return "";
   if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return calendarDate(value);
   const brazilian = value.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
   if (brazilian) return calendarDate(`${brazilian[3]}-${brazilian[2].padStart(2, "0")}-${brazilian[1].padStart(2, "0")}`);
   const serial = Number(value);
   if (Number.isFinite(serial) && serial > 1) {
-    const parsed = XLSX.SSF.parse_date_code(serial);
-    if (parsed) return calendarDate(`${parsed.y}-${String(parsed.m).padStart(2, "0")}-${String(parsed.d).padStart(2, "0")}`);
+    return excelSerialDate(serial);
   }
   throw new Error("data de nascimento inválida");
 }
