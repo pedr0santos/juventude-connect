@@ -13,6 +13,7 @@ import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { startLogin } from "@/const";
 import { DiscipulatorEditDialog } from "@/components/DiscipulatorEditDialog";
+import { ProfilePhoto } from "@/components/ProfilePhoto";
 import {
   AccountLinkDialog,
   DiscipulatorCreateDialog,
@@ -32,6 +33,7 @@ import {
   ArrowUpRight,
   Bell,
   Cake,
+  Camera,
   CalendarDays,
   Check,
   CheckCircle2,
@@ -46,6 +48,7 @@ import {
   Settings2,
   Sparkles,
   Users,
+  UserPlus,
   X,
   XCircle,
 } from "lucide-react";
@@ -72,6 +75,13 @@ function initials(name: string) {
 }
 function formatDate(date?: string | Date | null) {
   return formatBirthdayDate(date);
+}
+
+function readImageAsBase64(file: File, onReady: (dataBase64: string, contentType: "image/jpeg" | "image/png" | "image/webp") => void) {
+  const contentType = file.type === "image/png" ? "image/png" : file.type === "image/webp" ? "image/webp" : "image/jpeg";
+  const reader = new FileReader();
+  reader.onload = () => onReady(String(reader.result).split(",", 2)[1] ?? "", contentType);
+  reader.readAsDataURL(file);
 }
 
 export default function Home() {
@@ -247,6 +257,21 @@ export default function Home() {
     },
     onError: error => toast.error(error.message),
   });
+  const importYouthWorkbook = trpc.youths.importWorkbook.useMutation({
+    onSuccess: result => {
+      toast.success(`${result.created} criados, ${result.updated} atualizados, ${result.errors.length} com erro.`);
+      youthsQuery.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const uploadYouthPhoto = trpc.youths.uploadPhoto.useMutation({
+    onSuccess: () => { toast.success("Foto do jovem atualizada."); youthsQuery.refetch(); },
+    onError: error => toast.error(error.message),
+  });
+  const uploadDiscipulatorPhoto = trpc.discipulators.uploadPhoto.useMutation({
+    onSuccess: () => { toast.success("Foto do discipulador atualizada."); discipulatorsQuery.refetch(); },
+    onError: error => toast.error(error.message),
+  });
   const updateWhatsapp = trpc.youths.updateWhatsapp.useMutation({
     onSuccess: () => {
       toast.success("WhatsApp atualizado.");
@@ -259,6 +284,14 @@ export default function Home() {
       toast.success("Discipulador atualizado.");
       youthsQuery.refetch();
       discipulatorsQuery.refetch();
+    },
+    onError: error => toast.error(error.message),
+  });
+  const removeYouth = trpc.youths.remove.useMutation({
+    onSuccess: () => {
+      toast.success("Jovem excluído com sucesso.");
+      youthsQuery.refetch();
+      dashboard.refetch();
     },
     onError: error => toast.error(error.message),
   });
@@ -397,6 +430,15 @@ export default function Home() {
               >
                 <ClipboardCheck className="mr-2 h-4 w-4" /> Registrar presença
               </Button>
+              {user.role === "discipulator" && (
+                <Button
+                  onClick={() => setLocation("/cadastro-jovem")}
+                  variant="outline"
+                  className="w-full justify-center rounded-full border-[#d8dce1] bg-white text-[#18212f] hover:bg-[#f3eee7] sm:w-auto"
+                >
+                  <UserPlus className="mr-2 h-4 w-4 text-[#a16d3e]" /> Cadastrar jovem
+                </Button>
+              )}
             </div>
           </header>
           <select
@@ -488,35 +530,25 @@ export default function Home() {
               onUpdateWhatsapp={(id: number, whatsapp: string) =>
                 updateWhatsapp.mutate({ id, whatsapp })
               }
+              onUploadPhoto={(id: number, file: File) => readImageAsBase64(file, (dataBase64, contentType) => uploadYouthPhoto.mutate({ id, dataBase64, contentType }))}
+              canRemove={user?.role === "admin"}
+              onRemove={(id: number, name: string) => {
+                if (window.confirm(`Tem certeza que deseja excluir ${name}? Essa ação removerá o cadastro da lista ativa.`)) {
+                  removeYouth.mutate({ id });
+                }
+              }}
               onImport={(file: File) => {
                 const reader = new FileReader();
                 reader.onload = () => {
-                  const lines = String(reader.result)
-                    .split(/\\r?\\n/)
-                    .filter(Boolean);
-                  const rows = lines
-                    .slice(1)
-                    .map(line => line.split(","))
-                    .filter(
-                      parts =>
-                        parts.length >= 3 &&
-                        parts[0].trim() &&
-                        parts[1].trim() &&
-                        parts[2].trim()
-                    )
-                    .map(parts => ({
-                      name: parts[0].trim(),
-                      birthDate: parts[1].trim(),
-                      whatsapp: parts[2].trim(),
-                      discipulatorId: Number(parts[3] || 1),
-                      discipleshipStartDate: new Date()
-                        .toISOString()
-                        .slice(0, 10),
-                      relationshipStatus: "active" as const,
-                    }));
-                  bulkCreateYouth.mutate({ rows });
+                  const bytes = new Uint8Array(reader.result as ArrayBuffer);
+                  let binary = "";
+                  const chunkSize = 0x8000;
+                  for (let index = 0; index < bytes.length; index += chunkSize) {
+                    binary += String.fromCharCode(...Array.from(bytes.subarray(index, index + chunkSize)));
+                  }
+                  importYouthWorkbook.mutate({ fileBase64: btoa(binary) });
                 };
-                reader.readAsText(file);
+                reader.readAsArrayBuffer(file);
               }}
             />
           )}
@@ -532,6 +564,7 @@ export default function Home() {
                 linkAccount.mutate({ userId, discipulatorId })
               }
               onCreate={(data: any) => createDiscipulator.mutate(data)}
+              onUploadPhoto={(id: number, file: File) => readImageAsBase64(file, (dataBase64, contentType) => uploadDiscipulatorPhoto.mutate({ id, dataBase64, contentType }))}
             />
           )}
           {page === "presenca" && (
@@ -1068,7 +1101,10 @@ function YouthPage({
   onBirthday,
   onCreate,
   onUpdateWhatsapp,
+  onUploadPhoto,
   onReassign,
+  canRemove,
+  onRemove,
   onImport,
 }: any) {
   return (
@@ -1085,10 +1121,10 @@ function YouthPage({
           </div>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
             <label className="inline-flex cursor-pointer items-center justify-center rounded-full border border-[#dfe3e7] bg-white px-4 py-2 text-sm font-medium">
-              <span>Importar CSV</span>
+              <span>Importar XLSX</span>
               <input
                 type="file"
-                accept=".csv,text/csv"
+                accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 className="hidden"
                 onChange={event => {
                   const file = event.target.files?.[0];
@@ -1170,9 +1206,7 @@ function YouthPage({
                 >
                   <td className="py-4">
                     <div className="flex items-center gap-3">
-                      <div className="flex h-9 w-9 items-center justify-center rounded-full bg-[#f0e6dc] text-xs font-semibold text-[#966438]">
-                        {initials(youth.name)}
-                      </div>
+                      <ProfilePhoto name={youth.name} src={youth.photoUrl} size="sm" />
                       <div>
                         <p className="font-semibold">{youth.name}</p>
                         <p className="text-xs text-[#9299a2]">
@@ -1212,6 +1246,20 @@ function YouthPage({
                         onReassign(youth.id, discipulatorId)
                       }
                     />
+                    <label className="inline-flex cursor-pointer items-center justify-center">
+                      <Button type="button" variant="ghost" size="icon" asChild title={`Trocar foto de ${youth.name}`}>
+                        <span><Camera className="h-4 w-4 text-[#536a7f]" /><input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" className="hidden" onChange={event => { const file = event.target.files?.[0]; if (file) onUploadPhoto(youth.id, file); event.currentTarget.value = ""; }} /></span>
+                      </Button>
+                    </label>
+                    {canRemove && <Button
+                      onClick={() => onRemove(youth.id, youth.name)}
+                      variant="ghost"
+                      size="icon"
+                      title={`Excluir ${youth.name}`}
+                      aria-label={`Excluir ${youth.name}`}
+                    >
+                      <XCircle className="h-4 w-4 text-[#b25e50]" />
+                    </Button>}
                   </td>
                 </tr>
               ))}
@@ -1230,6 +1278,7 @@ function DiscipulatorsPage({
   onUpdateAliases,
   onLinkAccount,
   onCreate,
+  onUploadPhoto,
 }: any) {
   return (
     <div className="space-y-6">
@@ -1254,9 +1303,7 @@ function DiscipulatorsPage({
             <CardContent className="p-5">
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-3">
-                  <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-[#e9eef3] font-semibold text-[#536a7f]">
-                    {initials(item.name)}
-                  </div>
+                  <ProfilePhoto name={item.name} src={item.photoUrl} />
                   <div>
                     <p className="font-semibold">{item.name}</p>
                     <p className="text-xs text-[#9299a2]">
@@ -1284,6 +1331,10 @@ function DiscipulatorsPage({
               </div>
               <div className="mt-3 grid grid-cols-2 gap-3">
                 <DiscipulatorEditDialog item={item} onUpdate={onUpdate} />
+                <label className="inline-flex min-h-10 cursor-pointer items-center justify-center rounded-xl border border-[#d8dce1] bg-white px-3 text-xs text-[#18212f] hover:bg-[#f3eee7]">
+                  <Camera className="mr-2 h-4 w-4 text-[#536a7f]" /> Trocar foto
+                  <input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" className="hidden" onChange={event => { const file = event.target.files?.[0]; if (file) onUploadPhoto(item.id, file); event.currentTarget.value = ""; }} />
+                </label>
                 <Button
                   variant="outline"
                   className="min-h-10 rounded-xl border-[#d8dce1] bg-white px-3 text-xs text-[#18212f] hover:bg-[#f3eee7]"

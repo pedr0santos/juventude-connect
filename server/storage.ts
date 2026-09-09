@@ -3,6 +3,7 @@
 // Downloads return /manus-storage/{key} paths served via 307 redirect.
 
 import { ENV } from "./_core/env";
+import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 
 function getForgeConfig() {
   const forgeUrl = ENV.forgeApiUrl;
@@ -33,8 +34,15 @@ export async function storagePut(
   data: Buffer | Uint8Array | string,
   contentType = "application/octet-stream",
 ): Promise<{ key: string; url: string }> {
+  const normalized = appendHashSuffix(normalizeKey(relKey));
+  if (ENV.s3Endpoint && ENV.s3Bucket && ENV.s3AccessKeyId && ENV.s3SecretAccessKey) {
+    const client = new S3Client({ endpoint: ENV.s3Endpoint, region: ENV.s3Region, forcePathStyle: true, credentials: { accessKeyId: ENV.s3AccessKeyId, secretAccessKey: ENV.s3SecretAccessKey } });
+    await client.send(new PutObjectCommand({ Bucket: ENV.s3Bucket, Key: normalized, Body: data, ContentType: contentType }));
+    const url = ENV.s3PublicBaseUrl ? `${ENV.s3PublicBaseUrl.replace(/\/+$/, "")}/${normalized}` : `${ENV.s3Endpoint.replace(/\/+$/, "")}/${ENV.s3Bucket}/${normalized}`;
+    return { key: normalized, url };
+  }
   const { forgeUrl, forgeKey } = getForgeConfig();
-  const key = appendHashSuffix(normalizeKey(relKey));
+  const key = normalized;
 
   // 1. Get presigned PUT URL from Forge
   const presignUrl = new URL("v1/storage/presign/put", forgeUrl + "/");

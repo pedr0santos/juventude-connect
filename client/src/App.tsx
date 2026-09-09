@@ -6,12 +6,14 @@ import ErrorBoundary from "./components/ErrorBoundary";
 import { ThemeProvider } from "./contexts/ThemeContext";
 import Home from "./pages/Home";
 import AuthPage from "./pages/AuthPage";
+import YouthRegistrationPage from "./pages/YouthRegistrationPage";
 
 function Router() {
   return <Switch>
     <Route path="/" component={Home} />
     <Route path="/login" component={() => <AuthPage mode="login" />} />
     <Route path="/cadastro" component={() => <AuthPage mode="register" />} />
+    <Route path="/cadastro-jovem" component={YouthRegistrationPage} />
     <Route path="/recuperar-senha" component={() => <AuthPage mode="recover" />} />
     <Route path="/redefinir-senha" component={() => <AuthPage mode="reset" />} />
     <Route path="/admin" component={Home} />

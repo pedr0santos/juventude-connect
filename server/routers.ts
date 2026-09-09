@@ -1,7 +1,7 @@
 import { z } from "zod";
 import { TRPCError } from "@trpc/server";
 import { and, eq, sql } from "drizzle-orm";
-import { absenceNotifications, appSettings, attendance, discipulators, followUps, messageLogs, users, worshipEvents, youths } from "../drizzle/schema";
+import { absenceNotifications, appSettings, attendance, discipulatorResponsibles, discipulators, followUps, messageLogs, users, worshipEvents, youths } from "../drizzle/schema";
 import { getAbsenceNotificationSummary, getAttendanceSummary, getDashboardData, getDb, getReports, getSettings, listAbsenceNotifications, listAbsences, listAttendance, listDiscipulators, listMessageLogs, listYouths } from "./db";
 import { makeBirthdayReference, renderTemplate } from "./automation";
 import { sendWhatsAppTemplate } from "./whatsapp";
@@ -13,6 +13,9 @@ import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
 import { consumePasswordResetToken, createPasswordResetToken, createSession, hashPassword, normalizeEmail, revokeSession, revokeUserSessions, toPublicUser, validatePassword, verifyPassword } from "./auth";
 import { sendPasswordResetEmail } from "./mailer";
+import { calendarDate, calendarDateValue } from "@shared/calendar";
+import { importDiscipulatorsWorkbook, importYouthsWorkbook } from "./workbookImport";
+import { storagePut } from "./storage";
 
 const adminProcedure = protectedProcedure.use(({ ctx, next }) => {
   if (ctx.user.role !== "admin") throw new TRPCError({ code: "FORBIDDEN", message: "Acesso restrito ao administrador." });
@@ -25,6 +28,13 @@ const linkedProcedure = protectedProcedure.use(({ ctx, next }) => {
 });
 
 const youthInput = z.object({ name: z.string().min(2), birthDate: z.string(), whatsapp: z.string().default(""), address: z.string().optional(), photoUrl: z.string().optional(), notes: z.string().optional(), discipulatorId: z.number().int().positive().nullable().optional(), discipleshipStartDate: z.string(), relationshipStatus: z.enum(["active", "inactive"]).default("active") });
+const profilePhotoInput = z.object({ id: z.number().int(), dataBase64: z.string().min(20), contentType: z.enum(["image/jpeg", "image/png", "image/webp"]) });
+
+async function saveProfilePhoto(id: number, dataBase64: string, contentType: string, kind: "youth" | "discipulator") {
+  const data = Buffer.from(dataBase64, "base64");
+  if (data.length > 8 * 1024 * 1024) throw new TRPCError({ code: "PAYLOAD_TOO_LARGE", message: "A foto deve ter no máximo 8 MB." });
+  return storagePut(`profiles/${kind}/${id}`, data, contentType);
+}
 
 export const appRouter = router({
   system: systemRouter,
@@ -118,26 +128,49 @@ export const appRouter = router({
   reports: router({ get: linkedProcedure.input(z.object({ startDate: z.string(), endDate: z.string(), eventType: z.string().optional(), discipulatorId: z.number().optional(), youthId: z.number().optional(), lowFrequencyThreshold: z.number().min(1).max(100).optional(), maxConsecutiveAbsences: z.number().int().min(1).max(20).optional() })).query(({ input, ctx }) => getReports(input, ctx.user.role === "discipulator" ? ctx.user.discipulatorId ?? undefined : undefined)) }),
   youths: router({
     list: linkedProcedure.input(z.object({ search: z.string().optional(), discipulatorId: z.number().optional(), ageMin: z.number().optional(), ageMax: z.number().optional(), sort: z.enum(["name", "birthday"]).default("name") }).optional()).query(({ input, ctx }) => listYouths(input?.search, ctx.user.role === "discipulator" ? ctx.user.discipulatorId ?? undefined : input?.discipulatorId, input?.ageMin, input?.ageMax, input?.sort)),
-    create: adminProcedure.input(youthInput).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); const [row] = await db.insert(youths).values({ ...input, birthDate: new Date(input.birthDate), discipleshipStartDate: new Date(input.discipleshipStartDate) }); return { id: row.insertId }; }),
-    update: adminProcedure.input(youthInput.extend({ id: z.number().int() })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); const { id, ...data } = input; await db.update(youths).set({ ...data, birthDate: new Date(data.birthDate), discipleshipStartDate: new Date(data.discipleshipStartDate) }).where(eq(youths.id, id)); return { success: true }; }),
+    checkWhatsapp: linkedProcedure.input(z.object({ whatsapp: z.string().regex(/^\d{10,11}$/, "Informe DDD + número, com 10 ou 11 dígitos.") })).query(async ({ input }) => {
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Banco de dados indisponível." });
+      const normalized = input.whatsapp.replace(/\D/g, "");
+      const [existing] = await db.select({ name: youths.name }).from(youths).where(sql`regexp_replace(${youths.whatsapp}, '[^0-9]', '') = ${normalized}`).limit(1);
+      return { exists: Boolean(existing), name: existing?.name ?? null };
+    }),
+    createForDiscipulator: linkedProcedure.input(youthInput.omit({ discipulatorId: true, relationshipStatus: true }).extend({ whatsapp: z.string().regex(/^\d{10,11}$/, "Informe DDD + número, com 10 ou 11 dígitos.") })).mutation(async ({ input, ctx }) => {
+      if (ctx.user.role !== "discipulator" || !ctx.user.discipulatorId) throw new TRPCError({ code: "FORBIDDEN", message: "Somente um discipulador vinculado pode cadastrar jovens por esta rota." });
+      const db = await getDb();
+      if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: "Banco de dados indisponível." });
+      const normalized = input.whatsapp.replace(/\D/g, "");
+      const [existing] = await db.select({ name: youths.name }).from(youths).where(sql`regexp_replace(${youths.whatsapp}, '[^0-9]', '') = ${normalized}`).limit(1);
+      if (existing) throw new TRPCError({ code: "CONFLICT", message: `Jovem ${existing.name} já cadastrado no sistema.` });
+      const [row] = await db.insert(youths).values({ ...input, whatsapp: normalized, discipulatorId: ctx.user.discipulatorId, relationshipStatus: "active", birthDate: calendarDateValue(input.birthDate), discipleshipStartDate: calendarDateValue(input.discipleshipStartDate) });
+      return { id: row.insertId };
+    }),
+    create: adminProcedure.input(youthInput).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); const [row] = await db.insert(youths).values({ ...input, birthDate: calendarDateValue(input.birthDate), discipleshipStartDate: calendarDateValue(input.discipleshipStartDate) }); return { id: row.insertId }; }),
+    update: adminProcedure.input(youthInput.extend({ id: z.number().int() })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); const { id, ...data } = input; await db.update(youths).set({ ...data, birthDate: calendarDateValue(data.birthDate), discipleshipStartDate: calendarDateValue(data.discipleshipStartDate) }).where(eq(youths.id, id)); return { success: true }; }),
     updateWhatsapp: adminProcedure.input(z.object({ id: z.number().int(), whatsapp: z.string().default("") })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); await db.update(youths).set({ whatsapp: input.whatsapp.replace(/\\D/g, "") }).where(eq(youths.id, input.id)); return { success: true }; }),
     reassign: adminProcedure.input(z.object({ id: z.number().int(), discipulatorId: z.number().int().positive().nullable() })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); await db.update(youths).set({ discipulatorId: input.discipulatorId }).where(eq(youths.id, input.id)); return { success: true }; }),
     remove: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); await db.update(youths).set({ relationshipStatus: "inactive" }).where(eq(youths.id, input.id)); return { success: true }; }),
-    bulkCreate: adminProcedure.input(z.object({ rows: z.array(youthInput) })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); if (!input.rows.length) throw new TRPCError({ code: "BAD_REQUEST", message: "Nenhuma linha válida foi encontrada." }); await db.insert(youths).values(input.rows.map(row => ({ ...row, birthDate: new Date(row.birthDate), discipleshipStartDate: new Date(row.discipleshipStartDate) }))); return { imported: input.rows.length }; }),
+    bulkCreate: adminProcedure.input(z.object({ rows: z.array(youthInput) })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); if (!input.rows.length) throw new TRPCError({ code: "BAD_REQUEST", message: "Nenhuma linha válida foi encontrada." }); await db.insert(youths).values(input.rows.map(row => ({ ...row, birthDate: calendarDateValue(row.birthDate), discipleshipStartDate: calendarDateValue(row.discipleshipStartDate) }))); return { imported: input.rows.length }; }),
+    importWorkbook: adminProcedure.input(z.object({ fileBase64: z.string().min(20) })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); try { return await importYouthsWorkbook(db, Buffer.from(input.fileBase64, "base64")); } catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Não foi possível importar a planilha." }); } }),
+    uploadPhoto: adminProcedure.input(profilePhotoInput).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); const [youth] = await db.select({ id: youths.id }).from(youths).where(eq(youths.id, input.id)).limit(1); if (!youth) throw new TRPCError({ code: "NOT_FOUND", message: "Jovem não encontrado." }); const uploaded = await saveProfilePhoto(input.id, input.dataBase64, input.contentType, "youth"); await db.update(youths).set({ photoUrl: uploaded.url }).where(eq(youths.id, input.id)); return uploaded; }),
   }),
   discipulators: router({
     list: linkedProcedure.query(({ ctx }) => ctx.user.role === "discipulator" && ctx.user.discipulatorId ? listDiscipulators().then(rows => rows.filter(row => row.id === ctx.user.discipulatorId)) : listDiscipulators()),
-    create: adminProcedure.input(z.object({ name: z.string().min(2), whatsapp: z.string().min(8), status: z.enum(["active", "inactive"]).default("active"), notes: z.string().optional() })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); await db.insert(discipulators).values(input); return { success: true }; }),
+    responsibleOptions: adminProcedure.query(async () => { const db = await getDb(); if (!db) return []; return db.select().from(discipulatorResponsibles).where(eq(discipulatorResponsibles.active, "yes")).orderBy(discipulatorResponsibles.name); }),
+    create: adminProcedure.input(z.object({ name: z.string().min(2), whatsapp: z.string().min(8), status: z.enum(["active", "inactive"]).default("active"), notes: z.string().optional(), responsibleId: z.number().int().positive().nullable().optional() })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); if (input.responsibleId) { const [responsible] = await db.select({ id: discipulatorResponsibles.id }).from(discipulatorResponsibles).where(and(eq(discipulatorResponsibles.id, input.responsibleId), eq(discipulatorResponsibles.active, "yes"))).limit(1); if (!responsible) throw new TRPCError({ code: "BAD_REQUEST", message: "Discipulador responsável não autorizado." }); } await db.insert(discipulators).values(input); return { success: true }; }),
     updateAliases: adminProcedure.input(z.object({ id: z.number().int(), aliases: z.array(z.string().min(1)).max(20) })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); const [discipulator] = await db.select().from(discipulators).where(eq(discipulators.id, input.id)).limit(1); if (!discipulator) throw new TRPCError({ code: "NOT_FOUND" }); const aliasText = input.aliases.map(normalizeImportText).filter(Boolean).join(", "); await db.update(discipulators).set({ notes: `Apelidos: ${aliasText}` }).where(eq(discipulators.id, input.id)); const pending = await db.select({ id: youths.id, notes: youths.notes }).from(youths).where(sql`${youths.discipulatorId} is null`); const youthIds = selectYouthIdsForAliasRelink(pending, input.aliases); for (const youthId of youthIds) await db.update(youths).set({ discipulatorId: input.id }).where(eq(youths.id, youthId)); return { success: true, linked: youthIds.length }; }),
-    update: adminProcedure.input(z.object({ id: z.number(), name: z.string().min(2), whatsapp: z.string().min(8), status: z.enum(["active", "inactive"]), notes: z.string().optional() })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); const { id, ...data } = input; await db.update(discipulators).set(data).where(eq(discipulators.id, id)); return { success: true }; }),
+    update: adminProcedure.input(z.object({ id: z.number(), name: z.string().min(2), whatsapp: z.string().min(8), status: z.enum(["active", "inactive"]), notes: z.string().optional(), responsibleId: z.number().int().positive().nullable().optional() })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); if (input.responsibleId) { const [responsible] = await db.select({ id: discipulatorResponsibles.id }).from(discipulatorResponsibles).where(and(eq(discipulatorResponsibles.id, input.responsibleId), eq(discipulatorResponsibles.active, "yes"))).limit(1); if (!responsible) throw new TRPCError({ code: "BAD_REQUEST", message: "Discipulador responsável não autorizado." }); } const { id, ...data } = input; await db.update(discipulators).set(data).where(eq(discipulators.id, id)); return { success: true }; }),
+    importWorkbook: adminProcedure.input(z.object({ fileBase64: z.string().min(20) })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); try { return await importDiscipulatorsWorkbook(db, Buffer.from(input.fileBase64, "base64")); } catch (error) { throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error ? error.message : "Não foi possível importar a planilha." }); } }),
+    uploadPhoto: adminProcedure.input(profilePhotoInput).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); const [discipulator] = await db.select({ id: discipulators.id }).from(discipulators).where(eq(discipulators.id, input.id)).limit(1); if (!discipulator) throw new TRPCError({ code: "NOT_FOUND", message: "Discipulador não encontrado." }); const uploaded = await saveProfilePhoto(input.id, input.dataBase64, input.contentType, "discipulator"); await db.update(discipulators).set({ photoUrl: uploaded.url }).where(eq(discipulators.id, input.id)); return uploaded; }),
   }),
   attendance: router({
     list: linkedProcedure.input(z.object({ eventDate: z.string(), eventType: z.string() })).query(({ input, ctx }) => listAttendance(input.eventDate, input.eventType).then(async rows => { if (ctx.user.role !== "discipulator" || !ctx.user.discipulatorId) return rows; const db = await getDb(); if (!db) return []; const allowed = await db.select({ id: youths.id }).from(youths).where(eq(youths.discipulatorId, ctx.user.discipulatorId)); const ids = new Set(allowed.map(row => row.id)); return rows.filter(row => ids.has(row.youthId)); })),
     summary: linkedProcedure.input(z.object({ eventDate: z.string(), eventType: z.string() })).query(({ input, ctx }) => getAttendanceSummary(input.eventDate, input.eventType, ctx.user.role === "discipulator" ? ctx.user.discipulatorId ?? undefined : undefined)),
     markAbsence: adminProcedure.input(z.object({ eventDate: z.string(), eventType: z.string(), youthId: z.number(), absent: z.boolean() })).mutation(async ({ input }) => {
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      let [event] = await db.select().from(worshipEvents).where(and(eq(worshipEvents.eventDate, new Date(input.eventDate)), eq(worshipEvents.eventType, input.eventType))).limit(1);
-      if (!event) { await db.insert(worshipEvents).values({ eventDate: new Date(input.eventDate), eventType: input.eventType }); [event] = await db.select().from(worshipEvents).where(and(eq(worshipEvents.eventDate, new Date(input.eventDate)), eq(worshipEvents.eventType, input.eventType))).limit(1); }
+      const eventDate = calendarDateValue(input.eventDate);
+      let [event] = await db.select().from(worshipEvents).where(and(eq(worshipEvents.eventDate, eventDate), eq(worshipEvents.eventType, input.eventType))).limit(1);
+      if (!event) { await db.insert(worshipEvents).values({ eventDate, eventType: input.eventType }); [event] = await db.select().from(worshipEvents).where(and(eq(worshipEvents.eventDate, eventDate), eq(worshipEvents.eventType, input.eventType))).limit(1); }
       const [youth] = await db.select({ id: youths.id, name: youths.name, discipulatorId: youths.discipulatorId }).from(youths).where(eq(youths.id, input.youthId)).limit(1);
       if (!youth) throw new TRPCError({ code: "NOT_FOUND", message: "Jovem não encontrado." });
       const [discipulator] = youth.discipulatorId ? await db.select().from(discipulators).where(eq(discipulators.id, youth.discipulatorId)).limit(1) : [];
@@ -149,7 +182,8 @@ export const appRouter = router({
         if (existingNotification[0]) return { success: true, notification: "falta já registrada; notificação preservada", notificationId: existingNotification[0].id };
       }
       let attendanceId = existing[0]?.id;
-      if (!attendanceId) { const [created] = await db.insert(attendance).values({ eventId: event.id, youthId: input.youthId, status: "absent" }); attendanceId = created.insertId; }
+      if (!attendanceId) { const [created] = await db.insert(attendance).values({ eventId: event.id, youthId: input.youthId, status: input.absent ? "absent" : "present" }); attendanceId = created.insertId; }
+      if (!input.absent) return { success: true, notification: "presença registrada", notificationId: null, youthName: youth.name };
       if (youth.discipulatorId) { const followUp = await db.select().from(followUps).where(eq(followUps.attendanceId, attendanceId)).limit(1); if (!followUp[0]) await db.insert(followUps).values({ attendanceId, youthId: input.youthId, discipulatorId: youth.discipulatorId }); }
       const body = renderTemplate("Olá, {{discipulador}}. O seu discípulo {{discipulo}} faltou ao culto de {{culto}} em {{data}}. Procure saber como ele está e entre em contato com ele.", { discipulador: discipulator?.name ?? "Discipulador", discipulo: youth.name, culto: input.eventType, data: input.eventDate });
       const [notification] = await db.insert(absenceNotifications).values({ attendanceId, youthId: input.youthId, discipulatorId: discipulator?.id ?? null, recipient: discipulator?.whatsapp ?? null, body, status: discipulator ? "pending" : "error", error: discipulator ? null : "Discipulador não encontrado" });

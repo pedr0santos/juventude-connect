@@ -40,9 +40,18 @@ export const discipulators = mysqlTable("discipulators", {
   whatsapp: varchar("whatsapp", { length: 32 }).notNull(),
   status: mysqlEnum("status", ["active", "inactive"]).default("active").notNull(),
   notes: text("notes"),
+  photoUrl: text("photoUrl"),
+  responsibleId: int("responsibleId"),
   createdAt: timestamp("createdAt").defaultNow().notNull(),
   updatedAt: timestamp("updatedAt").defaultNow().onUpdateNow().notNull(),
 }, table => ({ nameIdx: index("discipulators_name_idx").on(table.name) }));
+
+export const discipulatorResponsibles = mysqlTable("discipulator_responsibles", {
+  id: int("id").autoincrement().primaryKey(),
+  name: varchar("name", { length: 180 }).notNull().unique(),
+  active: mysqlEnum("active", ["yes", "no"]).default("yes").notNull(),
+  createdAt: timestamp("createdAt").defaultNow().notNull(),
+});
 
 export const youths = mysqlTable("youths", {
   id: int("id").autoincrement().primaryKey(),

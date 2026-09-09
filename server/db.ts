@@ -3,6 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, absenceNotifications, appSettings, attendance, discipulators, followUps, messageLogs, users, worshipEvents, youths } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import { sortUpcomingBirthdays } from "../shared/birthday";
+import { calendarParts } from "@shared/calendar";
 import { hashPassword, normalizeEmail, validatePassword } from "./passwords";
 
 let _db: ReturnType<typeof drizzle> | null = null;
@@ -47,15 +48,14 @@ export async function bootstrapAdmin() {
 export async function getDashboardData(discipulatorId?: number) {
   const db = await getDb(); if (!db) return { youthCount: 0, activeYouthCount: 0, discipulatorCount: 0, birthdays: [], upcoming: [], pendingFollowUps: 0, lastEvent: null, recentAbsences: [] };
   const today = new Date();
-  const month = String(today.getMonth() + 1).padStart(2, "0");
-  const day = String(today.getDate()).padStart(2, "0");
+  const { month, day } = calendarParts(today);
   const youthScope = discipulatorId ? eq(youths.discipulatorId, discipulatorId) : undefined;
   const followUpScope = discipulatorId ? eq(followUps.discipulatorId, discipulatorId) : undefined;
   const [youthCount, activeYouthCount, discipulatorCount, birthdays, upcoming, pending, lastEvent, recentAbsences] = await Promise.all([
-    db.select({ count: sql<number>`count(*)` }).from(youths).where(youthScope),
+    db.select({ count: sql<number>`count(*)` }).from(youths).where(youthScope ? and(youthScope, eq(youths.relationshipStatus, "active")) : eq(youths.relationshipStatus, "active")),
     db.select({ count: sql<number>`count(*)` }).from(youths).where(youthScope ? and(youthScope, eq(youths.relationshipStatus, "active")) : eq(youths.relationshipStatus, "active")),
     db.select({ count: sql<number>`count(*)` }).from(discipulators).where(discipulatorId ? eq(discipulators.id, discipulatorId) : eq(discipulators.status, "active")),
-    db.select({ id: youths.id, name: youths.name, birthDate: youths.birthDate, whatsapp: youths.whatsapp, discipulatorId: youths.discipulatorId }).from(youths).where(youthScope ? and(youthScope, sql`month(${youths.birthDate}) = ${Number(month)} and day(${youths.birthDate}) = ${Number(day)} and ${youths.relationshipStatus} = 'active'`) : sql`month(${youths.birthDate}) = ${Number(month)} and day(${youths.birthDate}) = ${Number(day)} and ${youths.relationshipStatus} = 'active'`).orderBy(asc(youths.name)),
+    db.select({ id: youths.id, name: youths.name, birthDate: youths.birthDate, whatsapp: youths.whatsapp, discipulatorId: youths.discipulatorId }).from(youths).where(youthScope ? and(youthScope, sql`month(${youths.birthDate}) = ${month} and day(${youths.birthDate}) = ${day} and ${youths.relationshipStatus} = 'active'`) : sql`month(${youths.birthDate}) = ${month} and day(${youths.birthDate}) = ${day} and ${youths.relationshipStatus} = 'active'`).orderBy(asc(youths.name)),
     db.select({ id: youths.id, name: youths.name, birthDate: youths.birthDate }).from(youths).where(youthScope ? and(youthScope, eq(youths.relationshipStatus, "active")) : eq(youths.relationshipStatus, "active")),
     db.select({ count: sql<number>`count(*)` }).from(followUps).where(followUpScope ? and(followUpScope, eq(followUps.status, "pending")) : eq(followUps.status, "pending")),
     db.select().from(worshipEvents).orderBy(desc(worshipEvents.eventDate)).limit(1),
@@ -69,25 +69,26 @@ export async function getDashboardData(discipulatorId?: number) {
 
 export async function listYouths(search?: string, discipulatorId?: number, ageMin?: number, ageMax?: number, sort: "name" | "birthday" = "name") {
   const db = await getDb(); if (!db) return [];
-  const conditions = [];
+  const conditions = [eq(youths.relationshipStatus, "active")];
   if (search) conditions.push(sql`${youths.name} like ${`%${search}%`}`);
   if (discipulatorId) conditions.push(eq(youths.discipulatorId, discipulatorId));
   if (ageMin !== undefined) conditions.push(sql`timestampdiff(year, ${youths.birthDate}, curdate()) >= ${ageMin}`);
   if (ageMax !== undefined) conditions.push(sql`timestampdiff(year, ${youths.birthDate}, curdate()) <= ${ageMax}`);
-  const query = db.select({ id: youths.id, name: youths.name, birthDate: youths.birthDate, whatsapp: youths.whatsapp, address: youths.address, photoUrl: youths.photoUrl, notes: youths.notes, relationshipStatus: youths.relationshipStatus, discipleshipStartDate: youths.discipleshipStartDate, discipulatorId: youths.discipulatorId, discipulatorName: discipulators.name }).from(youths).innerJoin(discipulators, eq(youths.discipulatorId, discipulators.id)).where(conditions.length ? and(...conditions) : undefined);
+  const query = db.select({ id: youths.id, name: youths.name, birthDate: youths.birthDate, whatsapp: youths.whatsapp, address: youths.address, photoUrl: youths.photoUrl, notes: youths.notes, relationshipStatus: youths.relationshipStatus, discipleshipStartDate: youths.discipleshipStartDate, discipulatorId: youths.discipulatorId, discipulatorName: discipulators.name }).from(youths).leftJoin(discipulators, eq(youths.discipulatorId, discipulators.id)).where(and(...conditions));
   return sort === "birthday" ? query.orderBy(sql`${youths.birthDate} asc`) : query.orderBy(asc(youths.name));
 }
 
 export async function listDiscipulators() {
   const db = await getDb(); if (!db) return [];
-  return db.select({ id: discipulators.id, name: discipulators.name, whatsapp: discipulators.whatsapp, status: discipulators.status, notes: discipulators.notes, youthCount: sql<number>`count(${youths.id})`, youthNames: sql<string | null>`group_concat(${youths.name} order by ${youths.name} separator ', ')` }).from(discipulators).leftJoin(youths, eq(youths.discipulatorId, discipulators.id)).groupBy(discipulators.id).orderBy(asc(discipulators.name));
+  return db.select({ id: discipulators.id, name: discipulators.name, whatsapp: discipulators.whatsapp, photoUrl: discipulators.photoUrl, status: discipulators.status, notes: discipulators.notes, youthCount: sql<number>`count(case when ${youths.relationshipStatus} = 'active' then ${youths.id} end)`, youthNames: sql<string | null>`group_concat(case when ${youths.relationshipStatus} = 'active' then ${youths.name} end order by ${youths.name} separator ', ')` }).from(discipulators).leftJoin(youths, eq(youths.discipulatorId, discipulators.id)).where(eq(discipulators.status, "active")).groupBy(discipulators.id).orderBy(asc(discipulators.name));
 }
 
 export async function listAttendance(eventDate?: string, eventType?: string) {
   const db = await getDb(); if (!db) return [];
-  const event = eventDate && eventType ? await db.select().from(worshipEvents).where(and(eq(worshipEvents.eventDate, new Date(eventDate)), eq(worshipEvents.eventType, eventType))).limit(1) : [];
+  const event = eventDate && eventType ? await db.select().from(worshipEvents).where(sql`${worshipEvents.eventDate} = ${new Date(`${eventDate}T12:00:00.000Z`)} and ${worshipEvents.eventType} = ${eventType}`).limit(1) : [];
   const eventId = event[0]?.id;
-  return db.select({ youthId: youths.id, name: youths.name, attendanceId: attendance.id, status: attendance.status, followUpId: followUps.id, followUpStatus: followUps.status }).from(youths).leftJoin(attendance, eventId ? and(eq(attendance.youthId, youths.id), eq(attendance.eventId, eventId)) : sql`1=0`).leftJoin(followUps, eq(followUps.attendanceId, attendance.id)).where(eq(youths.relationshipStatus, "active")).orderBy(asc(youths.name));
+  const scope = eventType === "Sedentos +20" ? and(eq(youths.relationshipStatus, "active"), sql`timestampdiff(year, ${youths.birthDate}, curdate()) >= 20`) : eq(youths.relationshipStatus, "active");
+  return db.select({ youthId: youths.id, name: youths.name, attendanceId: attendance.id, status: attendance.status, followUpId: followUps.id, followUpStatus: followUps.status }).from(youths).leftJoin(attendance, eventId ? and(eq(attendance.youthId, youths.id), eq(attendance.eventId, eventId)) : sql`1=0`).leftJoin(followUps, eq(followUps.attendanceId, attendance.id)).where(scope).orderBy(asc(youths.name));
 }
 
 export async function getSettings() { const db = await getDb(); if (!db) return null; const result = await db.select().from(appSettings).limit(1); return result[0] ?? null; }
@@ -96,9 +97,10 @@ export async function listMessageLogs() { const db = await getDb(); if (!db) ret
 
 export async function getAttendanceSummary(eventDate: string, eventType: string, discipulatorId?: number) {
   const db = await getDb(); if (!db) return { event: null, totals: { active: 0, present: 0, absent: 0, unmarked: 0, notifications: 0 }, rows: [] };
-  const [event] = await db.select().from(worshipEvents).where(and(eq(worshipEvents.eventDate, new Date(eventDate)), eq(worshipEvents.eventType, eventType))).limit(1);
+  const [event] = await db.select().from(worshipEvents).where(sql`${worshipEvents.eventDate} = ${new Date(`${eventDate}T12:00:00.000Z`)} and ${worshipEvents.eventType} = ${eventType}`).limit(1);
   if (!event) return { event: null, totals: { active: 0, present: 0, absent: 0, unmarked: 0, notifications: 0 }, rows: [] };
-  const scope = discipulatorId ? and(eq(youths.discipulatorId, discipulatorId), eq(youths.relationshipStatus, "active")) : eq(youths.relationshipStatus, "active");
+  const activeScope = eventType === "Sedentos +20" ? sql`timestampdiff(year, ${youths.birthDate}, curdate()) >= 20` : undefined;
+  const scope = discipulatorId ? and(eq(youths.discipulatorId, discipulatorId), eq(youths.relationshipStatus, "active"), activeScope) : activeScope ? and(eq(youths.relationshipStatus, "active"), activeScope) : eq(youths.relationshipStatus, "active");
   const rows = await db.select({ youthId: youths.id, youthName: youths.name, discipulatorName: discipulators.name, status: attendance.status, notificationStatus: absenceNotifications.status, notificationError: absenceNotifications.error, recipient: absenceNotifications.recipient }).from(youths).leftJoin(discipulators, eq(youths.discipulatorId, discipulators.id)).leftJoin(attendance, and(eq(attendance.youthId, youths.id), eq(attendance.eventId, event.id))).leftJoin(absenceNotifications, eq(absenceNotifications.attendanceId, attendance.id)).where(scope).orderBy(asc(youths.name));
   const totals = { active: rows.length, present: rows.filter(row => row.status === "present").length, absent: rows.filter(row => row.status === "absent").length, unmarked: rows.filter(row => !row.status).length, notifications: rows.filter(row => row.notificationStatus).length };
   return { event, totals, rows };
