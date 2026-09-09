@@ -1,20 +1,28 @@
 import type { Express } from "express";
 import { ENV } from "./env";
+import { storageGetSignedUrl } from "../storage";
 
 export function registerStorageProxy(app: Express) {
-  app.get("/manus-storage/*", async (req, res) => {
+  app.get(["/storage/*", "/manus-storage/*"], async (req, res) => {
     const key = (req.params as Record<string, string>)[0];
     if (!key) {
       res.status(400).send("Missing storage key");
       return;
     }
 
-    if (!ENV.forgeApiUrl || !ENV.forgeApiKey) {
-      res.status(500).send("Storage proxy not configured");
-      return;
-    }
-
     try {
+      if (req.path.startsWith("/storage/") && ENV.s3Endpoint && ENV.s3Bucket && ENV.s3AccessKeyId && ENV.s3SecretAccessKey) {
+        const url = await storageGetSignedUrl(key);
+        res.set("Cache-Control", "private, max-age=300");
+        res.redirect(307, url);
+        return;
+      }
+
+      if (!ENV.forgeApiUrl || !ENV.forgeApiKey) {
+        res.status(500).send("Storage proxy not configured");
+        return;
+      }
+
       const forgeUrl = new URL(
         "v1/storage/presign/get",
         ENV.forgeApiUrl.replace(/\/+$/, "") + "/",

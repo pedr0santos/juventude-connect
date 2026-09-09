@@ -3,7 +3,8 @@
 // Downloads return /manus-storage/{key} paths served via 307 redirect.
 
 import { ENV } from "./_core/env";
-import { PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 function getForgeConfig() {
   const forgeUrl = ENV.forgeApiUrl;
@@ -22,11 +23,27 @@ function normalizeKey(relKey: string): string {
   return relKey.replace(/^\/+/, "");
 }
 
+export function toStorageProxyUrl(url: string | null): string | null {
+  if (!url || url.startsWith("/storage/") || url.startsWith("/manus-storage/")) return url;
+  const prefixes = [
+    ENV.s3PublicBaseUrl,
+    ENV.s3Endpoint && ENV.s3Bucket ? `${ENV.s3Endpoint.replace(/\/+$/, "")}/${ENV.s3Bucket}` : "",
+  ].filter(Boolean).map(prefix => `${prefix!.replace(/\/+$/, "")}/`);
+  const prefix = prefixes.find(value => url.startsWith(value));
+  if (!prefix) return url;
+  return `/storage/${normalizeKey(decodeURIComponent(url.slice(prefix.length)))}`;
+}
+
 function appendHashSuffix(relKey: string): string {
   const hash = crypto.randomUUID().replace(/-/g, "").slice(0, 8);
   const lastDot = relKey.lastIndexOf(".");
   if (lastDot === -1) return `${relKey}_${hash}`;
   return `${relKey.slice(0, lastDot)}_${hash}${relKey.slice(lastDot)}`;
+}
+
+function getS3Client() {
+  if (!ENV.s3Endpoint || !ENV.s3Bucket || !ENV.s3AccessKeyId || !ENV.s3SecretAccessKey) return null;
+  return new S3Client({ endpoint: ENV.s3Endpoint, region: ENV.s3Region, forcePathStyle: true, credentials: { accessKeyId: ENV.s3AccessKeyId, secretAccessKey: ENV.s3SecretAccessKey } });
 }
 
 export async function storagePut(
@@ -35,11 +52,10 @@ export async function storagePut(
   contentType = "application/octet-stream",
 ): Promise<{ key: string; url: string }> {
   const normalized = appendHashSuffix(normalizeKey(relKey));
-  if (ENV.s3Endpoint && ENV.s3Bucket && ENV.s3AccessKeyId && ENV.s3SecretAccessKey) {
-    const client = new S3Client({ endpoint: ENV.s3Endpoint, region: ENV.s3Region, forcePathStyle: true, credentials: { accessKeyId: ENV.s3AccessKeyId, secretAccessKey: ENV.s3SecretAccessKey } });
-    await client.send(new PutObjectCommand({ Bucket: ENV.s3Bucket, Key: normalized, Body: data, ContentType: contentType }));
-    const url = ENV.s3PublicBaseUrl ? `${ENV.s3PublicBaseUrl.replace(/\/+$/, "")}/${normalized}` : `${ENV.s3Endpoint.replace(/\/+$/, "")}/${ENV.s3Bucket}/${normalized}`;
-    return { key: normalized, url };
+  const s3Client = getS3Client();
+  if (s3Client) {
+    await s3Client.send(new PutObjectCommand({ Bucket: ENV.s3Bucket, Key: normalized, Body: data, ContentType: contentType }));
+    return { key: normalized, url: `/storage/${normalized}` };
   }
   const { forgeUrl, forgeKey } = getForgeConfig();
   const key = normalized;
@@ -85,6 +101,11 @@ export async function storageGet(relKey: string): Promise<{ key: string; url: st
 }
 
 export async function storageGetSignedUrl(relKey: string): Promise<string> {
+  const s3Client = getS3Client();
+  if (s3Client) {
+    return getSignedUrl(s3Client, new GetObjectCommand({ Bucket: ENV.s3Bucket, Key: normalizeKey(relKey) }), { expiresIn: 300 });
+  }
+
   const { forgeUrl, forgeKey } = getForgeConfig();
   const key = normalizeKey(relKey);
 

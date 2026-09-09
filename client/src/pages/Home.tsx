@@ -556,6 +556,10 @@ export default function Home() {
             <DiscipulatorsPage
               discipulators={discipulators}
               accounts={accountsQuery.data ?? []}
+              onViewYouth={(discipulatorId: number) => {
+                setDiscipulatorFilter(String(discipulatorId));
+                setLocation("/jovens");
+              }}
               onUpdate={(item: any) => updateDiscipulator.mutate(item)}
               onUpdateAliases={(id: number, aliases: string[]) =>
                 updateAliases.mutate({ id, aliases })
@@ -1274,12 +1278,28 @@ function YouthPage({
 function DiscipulatorsPage({
   discipulators,
   accounts,
+  onViewYouth,
   onUpdate,
   onUpdateAliases,
   onLinkAccount,
   onCreate,
   onUploadPhoto,
 }: any) {
+  const [photoPreviews, setPhotoPreviews] = useState<Record<number, string>>({});
+
+  useEffect(() => {
+    setPhotoPreviews(current => {
+      const next = { ...current };
+      discipulators.forEach((item: any) => {
+        if (next[item.id] && item.photoUrl) {
+          URL.revokeObjectURL(next[item.id]);
+          delete next[item.id];
+        }
+      });
+      return next;
+    });
+  }, [discipulators]);
+
   return (
     <div className="space-y-6">
       <div className="flex flex-col items-stretch justify-between gap-4 sm:flex-row sm:items-end">
@@ -1303,7 +1323,7 @@ function DiscipulatorsPage({
             <CardContent className="p-5">
               <div className="flex items-start justify-between">
                 <div className="flex items-center gap-3">
-                  <ProfilePhoto name={item.name} src={item.photoUrl} />
+                  <ProfilePhoto name={item.name} src={photoPreviews[item.id] ?? item.photoUrl} />
                   <div>
                     <p className="font-semibold">{item.name}</p>
                     <p className="text-xs text-[#9299a2]">
@@ -1333,10 +1353,11 @@ function DiscipulatorsPage({
                 <DiscipulatorEditDialog item={item} onUpdate={onUpdate} />
                 <label className="inline-flex min-h-10 cursor-pointer items-center justify-center rounded-xl border border-[#d8dce1] bg-white px-3 text-xs text-[#18212f] hover:bg-[#f3eee7]">
                   <Camera className="mr-2 h-4 w-4 text-[#536a7f]" /> Trocar foto
-                  <input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" className="hidden" onChange={event => { const file = event.target.files?.[0]; if (file) onUploadPhoto(item.id, file); event.currentTarget.value = ""; }} />
+                  <input type="file" accept="image/jpeg,image/png,image/webp" capture="environment" className="hidden" onChange={event => { const file = event.target.files?.[0]; if (file) { const previous = photoPreviews[item.id]; if (previous) URL.revokeObjectURL(previous); setPhotoPreviews(current => ({ ...current, [item.id]: URL.createObjectURL(file) })); onUploadPhoto(item.id, file); } event.currentTarget.value = ""; }} />
                 </label>
                 <Button
                   variant="outline"
+                  onClick={() => onViewYouth(item.id)}
                   className="min-h-10 rounded-xl border-[#d8dce1] bg-white px-3 text-xs text-[#18212f] hover:bg-[#f3eee7]"
                 >
                   Acompanhamento <ChevronRight className="ml-auto h-4 w-4" />

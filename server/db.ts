@@ -5,6 +5,7 @@ import { ENV } from "./_core/env";
 import { sortUpcomingBirthdays } from "../shared/birthday";
 import { calendarParts } from "@shared/calendar";
 import { hashPassword, normalizeEmail, validatePassword } from "./passwords";
+import { toStorageProxyUrl } from "./storage";
 
 let _db: ReturnType<typeof drizzle> | null = null;
 
@@ -80,7 +81,8 @@ export async function listYouths(search?: string, discipulatorId?: number, ageMi
 
 export async function listDiscipulators() {
   const db = await getDb(); if (!db) return [];
-  return db.select({ id: discipulators.id, name: discipulators.name, whatsapp: discipulators.whatsapp, photoUrl: discipulators.photoUrl, status: discipulators.status, notes: discipulators.notes, youthCount: sql<number>`count(case when ${youths.relationshipStatus} = 'active' then ${youths.id} end)`, youthNames: sql<string | null>`group_concat(case when ${youths.relationshipStatus} = 'active' then ${youths.name} end order by ${youths.name} separator ', ')` }).from(discipulators).leftJoin(youths, eq(youths.discipulatorId, discipulators.id)).where(eq(discipulators.status, "active")).groupBy(discipulators.id, discipulators.name, discipulators.whatsapp, discipulators.photoUrl, discipulators.status, discipulators.notes).orderBy(asc(discipulators.name));
+  const rows = await db.select({ id: discipulators.id, name: discipulators.name, whatsapp: discipulators.whatsapp, photoUrl: discipulators.photoUrl, status: discipulators.status, notes: discipulators.notes, youthCount: sql<number>`count(case when ${youths.relationshipStatus} = 'active' then ${youths.id} end)`, youthNames: sql<string | null>`group_concat(case when ${youths.relationshipStatus} = 'active' then ${youths.name} end order by ${youths.name} separator ', ')` }).from(discipulators).leftJoin(youths, eq(youths.discipulatorId, discipulators.id)).where(eq(discipulators.status, "active")).groupBy(discipulators.id, discipulators.name, discipulators.whatsapp, discipulators.photoUrl, discipulators.status, discipulators.notes).orderBy(asc(discipulators.name));
+  return rows.map(row => ({ ...row, photoUrl: toStorageProxyUrl(row.photoUrl) }));
 }
 
 export async function listAttendance(eventDate?: string, eventType?: string) {
