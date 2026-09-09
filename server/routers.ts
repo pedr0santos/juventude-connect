@@ -7,7 +7,7 @@ import { makeBirthdayReference, renderTemplate } from "./automation";
 import { sendWhatsAppTemplate } from "./whatsapp";
 import { canAccessScopedData } from "./access";
 import { normalizeImportText, selectYouthIdsForAliasRelink } from "./importRules";
-import { COOKIE_NAME } from "@shared/const";
+import { COOKIE_NAME, WORSHIP_EVENT_TYPES } from "@shared/const";
 import { getSessionCookieOptions } from "./_core/cookies";
 import { systemRouter } from "./_core/systemRouter";
 import { protectedProcedure, publicProcedure, router } from "./_core/trpc";
@@ -164,13 +164,13 @@ export const appRouter = router({
     uploadPhoto: adminProcedure.input(profilePhotoInput).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); const [discipulator] = await db.select({ id: discipulators.id }).from(discipulators).where(eq(discipulators.id, input.id)).limit(1); if (!discipulator) throw new TRPCError({ code: "NOT_FOUND", message: "Discipulador não encontrado." }); const uploaded = await saveProfilePhoto(input.id, input.dataBase64, input.contentType, "discipulator"); await db.update(discipulators).set({ photoUrl: uploaded.url }).where(eq(discipulators.id, input.id)); return uploaded; }),
   }),
   attendance: router({
-    list: linkedProcedure.input(z.object({ eventDate: z.string(), eventType: z.string() })).query(({ input, ctx }) => listAttendance(input.eventDate, input.eventType).then(async rows => { if (ctx.user.role !== "discipulator" || !ctx.user.discipulatorId) return rows; const db = await getDb(); if (!db) return []; const allowed = await db.select({ id: youths.id }).from(youths).where(eq(youths.discipulatorId, ctx.user.discipulatorId)); const ids = new Set(allowed.map(row => row.id)); return rows.filter(row => ids.has(row.youthId)); })),
-    summary: linkedProcedure.input(z.object({ eventDate: z.string(), eventType: z.string() })).query(({ input, ctx }) => getAttendanceSummary(input.eventDate, input.eventType, ctx.user.role === "discipulator" ? ctx.user.discipulatorId ?? undefined : undefined)),
-    markAbsence: adminProcedure.input(z.object({ eventDate: z.string(), eventType: z.string(), youthId: z.number(), absent: z.boolean() })).mutation(async ({ input }) => {
+    list: linkedProcedure.input(z.object({ eventDate: z.string(), eventType: z.enum(WORSHIP_EVENT_TYPES) })).query(({ input, ctx }) => listAttendance(input.eventDate, input.eventType).then(async rows => { if (ctx.user.role !== "discipulator" || !ctx.user.discipulatorId) return rows; const db = await getDb(); if (!db) return []; const allowed = await db.select({ id: youths.id }).from(youths).where(eq(youths.discipulatorId, ctx.user.discipulatorId)); const ids = new Set(allowed.map(row => row.id)); return rows.filter(row => ids.has(row.youthId)); })),
+    summary: linkedProcedure.input(z.object({ eventDate: z.string(), eventType: z.enum(WORSHIP_EVENT_TYPES) })).query(({ input, ctx }) => getAttendanceSummary(input.eventDate, input.eventType, ctx.user.role === "discipulator" ? ctx.user.discipulatorId ?? undefined : undefined)),
+    markAbsence: adminProcedure.input(z.object({ eventDate: z.string(), eventType: z.enum(WORSHIP_EVENT_TYPES), youthId: z.number(), absent: z.boolean() })).mutation(async ({ input }) => {
       const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      const eventDate = calendarDateValue(input.eventDate);
-      let [event] = await db.select().from(worshipEvents).where(and(eq(worshipEvents.eventDate, eventDate), eq(worshipEvents.eventType, input.eventType))).limit(1);
-      if (!event) { await db.insert(worshipEvents).values({ eventDate, eventType: input.eventType }); [event] = await db.select().from(worshipEvents).where(and(eq(worshipEvents.eventDate, eventDate), eq(worshipEvents.eventType, input.eventType))).limit(1); }
+      const eventDate = calendarDate(input.eventDate);
+      let [event] = await db.select().from(worshipEvents).where(and(eq(worshipEvents.eventDate, sql`${eventDate}`), eq(worshipEvents.eventType, input.eventType))).limit(1);
+      if (!event) { await db.insert(worshipEvents).values({ eventDate: sql`${eventDate}`, eventType: input.eventType }).onDuplicateKeyUpdate({ set: { eventType: input.eventType } }); [event] = await db.select().from(worshipEvents).where(and(eq(worshipEvents.eventDate, sql`${eventDate}`), eq(worshipEvents.eventType, input.eventType))).limit(1); }
       const [youth] = await db.select({ id: youths.id, name: youths.name, discipulatorId: youths.discipulatorId }).from(youths).where(eq(youths.id, input.youthId)).limit(1);
       if (!youth) throw new TRPCError({ code: "NOT_FOUND", message: "Jovem não encontrado." });
       const [discipulator] = youth.discipulatorId ? await db.select().from(discipulators).where(eq(discipulators.id, youth.discipulatorId)).limit(1) : [];

@@ -12,6 +12,7 @@ import { toast } from "sonner";
 import { useAuth } from "@/_core/hooks/useAuth";
 import { trpc } from "@/lib/trpc";
 import { startLogin } from "@/const";
+import { WORSHIP_EVENT_TYPES, type WorshipEventType } from "@shared/const";
 import { DiscipulatorEditDialog } from "@/components/DiscipulatorEditDialog";
 import { ProfilePhoto } from "@/components/ProfilePhoto";
 import {
@@ -93,7 +94,7 @@ export default function Home() {
   const [sort, setSort] = useState<"name" | "birthday">("name");
   const [discipulatorFilter, setDiscipulatorFilter] = useState("");
   const [presenceDate, setPresenceDate] = useState("2026-08-19");
-  const [eventType, setEventType] = useState("Sedentos +20");
+  const [eventType, setEventType] = useState<WorshipEventType>(WORSHIP_EVENT_TYPES[0]);
   const [absenceCount, setAbsenceCount] = useState(0);
   const [presenceSummary, setPresenceSummary] = useState<any>(null);
   const [birthdayTemplate, setBirthdayTemplate] = useState(
@@ -1431,10 +1432,10 @@ function AttendancePage({
   onOpenNotifications,
   onOpenAbsences,
 }: any) {
-  const cultos = [
-    { name: "Sedentos +20", day: "Sexta-feira", weekday: 5 },
-    { name: "Culto Sedentos", day: "Sábado", weekday: 6 },
-    { name: "Cultos de Domingo", day: "Domingo", weekday: 0 },
+  const cultos: Array<{ name: WorshipEventType; day: string; weekday: number }> = [
+    { name: WORSHIP_EVENT_TYPES[0], day: "Sexta-feira", weekday: 5 },
+    { name: WORSHIP_EVENT_TYPES[1], day: "Sábado", weekday: 6 },
+    { name: WORSHIP_EVENT_TYPES[2], day: "Domingo", weekday: 0 },
   ];
   const selectCulto = (culto: any) => {
     setEventType(culto.name);

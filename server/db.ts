@@ -3,7 +3,7 @@ import { drizzle } from "drizzle-orm/mysql2";
 import { InsertUser, absenceNotifications, appSettings, attendance, discipulators, followUps, messageLogs, users, worshipEvents, youths } from "../drizzle/schema";
 import { ENV } from "./_core/env";
 import { sortUpcomingBirthdays } from "../shared/birthday";
-import { calendarParts } from "@shared/calendar";
+import { calendarDate, calendarParts } from "@shared/calendar";
 import { hashPassword, normalizeEmail, validatePassword } from "./passwords";
 import { toStorageProxyUrl } from "./storage";
 
@@ -87,7 +87,7 @@ export async function listDiscipulators() {
 
 export async function listAttendance(eventDate?: string, eventType?: string) {
   const db = await getDb(); if (!db) return [];
-  const event = eventDate && eventType ? await db.select().from(worshipEvents).where(sql`${worshipEvents.eventDate} = ${new Date(`${eventDate}T12:00:00.000Z`)} and ${worshipEvents.eventType} = ${eventType}`).limit(1) : [];
+  const event = eventDate && eventType ? await db.select().from(worshipEvents).where(and(eq(worshipEvents.eventDate, sql`${calendarDate(eventDate)}`), eq(worshipEvents.eventType, eventType))).limit(1) : [];
   const eventId = event[0]?.id;
   const scope = eventType === "Sedentos +20" ? and(eq(youths.relationshipStatus, "active"), sql`timestampdiff(year, ${youths.birthDate}, curdate()) >= 20`) : eq(youths.relationshipStatus, "active");
   return db.select({ youthId: youths.id, name: youths.name, attendanceId: attendance.id, status: attendance.status, followUpId: followUps.id, followUpStatus: followUps.status }).from(youths).leftJoin(attendance, eventId ? and(eq(attendance.youthId, youths.id), eq(attendance.eventId, eventId)) : sql`1=0`).leftJoin(followUps, eq(followUps.attendanceId, attendance.id)).where(scope).orderBy(asc(youths.name));
@@ -99,7 +99,7 @@ export async function listMessageLogs() { const db = await getDb(); if (!db) ret
 
 export async function getAttendanceSummary(eventDate: string, eventType: string, discipulatorId?: number) {
   const db = await getDb(); if (!db) return { event: null, totals: { active: 0, present: 0, absent: 0, unmarked: 0, notifications: 0 }, rows: [] };
-  const [event] = await db.select().from(worshipEvents).where(sql`${worshipEvents.eventDate} = ${new Date(`${eventDate}T12:00:00.000Z`)} and ${worshipEvents.eventType} = ${eventType}`).limit(1);
+  const [event] = await db.select().from(worshipEvents).where(and(eq(worshipEvents.eventDate, sql`${calendarDate(eventDate)}`), eq(worshipEvents.eventType, eventType))).limit(1);
   if (!event) return { event: null, totals: { active: 0, present: 0, absent: 0, unmarked: 0, notifications: 0 }, rows: [] };
   const activeScope = eventType === "Sedentos +20" ? sql`timestampdiff(year, ${youths.birthDate}, curdate()) >= 20` : undefined;
   const scope = discipulatorId ? and(eq(youths.discipulatorId, discipulatorId), eq(youths.relationshipStatus, "active"), activeScope) : activeScope ? and(eq(youths.relationshipStatus, "active"), activeScope) : eq(youths.relationshipStatus, "active");
@@ -152,7 +152,7 @@ function ratioPercent(numerator: number, denominator: number) {
 async function collectReportRows(filters: ReportFilters) {
   const db = await getDb();
   if (!db) return [];
-  const conditions = [gte(worshipEvents.eventDate, new Date(filters.startDate)), lt(worshipEvents.eventDate, new Date(`${addDaysToDate(filters.endDate, 1)}T12:00:00`))];
+  const conditions = [gte(worshipEvents.eventDate, sql`${calendarDate(filters.startDate)}`), lt(worshipEvents.eventDate, sql`${calendarDate(addDaysToDate(filters.endDate, 1))}`)];
   if (filters.eventType) conditions.push(eq(worshipEvents.eventType, filters.eventType));
   if (filters.discipulatorId) conditions.push(eq(youths.discipulatorId, filters.discipulatorId));
   if (filters.youthId) conditions.push(eq(youths.id, filters.youthId));
