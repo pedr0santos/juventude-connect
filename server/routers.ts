@@ -30,6 +30,19 @@ const linkedProcedure = protectedProcedure.use(({ ctx, next }) => {
 const youthInput = z.object({ name: z.string().min(2), birthDate: z.string(), whatsapp: z.string().default(""), address: z.string().optional(), photoUrl: z.string().optional(), notes: z.string().optional(), discipulatorId: z.number().int().positive().nullable().optional(), discipleshipStartDate: z.string(), relationshipStatus: z.enum(["active", "inactive"]).default("active") });
 const profilePhotoInput = z.object({ id: z.number().int(), dataBase64: z.string().min(20), contentType: z.enum(["image/jpeg", "image/png", "image/webp"]) });
 
+function formatWorkbookImportError(error: unknown) {
+  const details = error as { cause?: unknown; code?: unknown; errno?: unknown; sqlState?: unknown; message?: unknown };
+  const cause = details.cause as { code?: unknown; errno?: unknown; sqlState?: unknown; message?: unknown } | undefined;
+  const message = typeof cause?.message === "string" ? cause.message : typeof details.message === "string" ? details.message : "erro desconhecido";
+  if (message.startsWith("Importação cancelada:")) return message;
+  const diagnostics = [
+    cause?.code ?? details.code,
+    cause?.sqlState ?? details.sqlState,
+    cause?.errno ?? details.errno,
+  ].filter(value => value !== undefined && value !== null).join(" / ");
+  return `A importação foi cancelada: ${message}${diagnostics ? ` [${diagnostics}]` : ""}`;
+}
+
 async function saveProfilePhoto(id: number, dataBase64: string, contentType: string, kind: "youth" | "discipulator") {
   const data = Buffer.from(dataBase64, "base64");
   if (data.length > 8 * 1024 * 1024) throw new TRPCError({ code: "PAYLOAD_TOO_LARGE", message: "A foto deve ter no máximo 8 MB." });
@@ -151,7 +164,7 @@ export const appRouter = router({
     reassign: adminProcedure.input(z.object({ id: z.number().int(), discipulatorId: z.number().int().positive().nullable() })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); await db.update(youths).set({ discipulatorId: input.discipulatorId }).where(eq(youths.id, input.id)); return { success: true }; }),
     remove: adminProcedure.input(z.object({ id: z.number().int() })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); await db.update(youths).set({ relationshipStatus: "inactive" }).where(eq(youths.id, input.id)); return { success: true }; }),
     bulkCreate: adminProcedure.input(z.object({ rows: z.array(youthInput) })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); if (!input.rows.length) throw new TRPCError({ code: "BAD_REQUEST", message: "Nenhuma linha válida foi encontrada." }); await db.insert(youths).values(input.rows.map(row => ({ ...row, birthDate: calendarDateValue(row.birthDate), discipleshipStartDate: calendarDateValue(row.discipleshipStartDate) }))); return { imported: input.rows.length }; }),
-    importWorkbook: adminProcedure.input(z.object({ fileBase64: z.string().min(20) })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); try { return await importYouthsWorkbook(db, Buffer.from(input.fileBase64, "base64")); } catch (error) { const details = error as { code?: unknown; errno?: unknown; sqlState?: unknown; message?: unknown }; console.error("[youths.importWorkbook] failed", { code: details.code, errno: details.errno, sqlState: details.sqlState, message: details.message }); throw new TRPCError({ code: "BAD_REQUEST", message: error instanceof Error && error.message.startsWith("Importação cancelada:") ? error.message : "A importação foi cancelada. Nenhum cadastro foi alterado." }); } }),
+    importWorkbook: adminProcedure.input(z.object({ fileBase64: z.string().min(20) })).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); try { return await importYouthsWorkbook(db, Buffer.from(input.fileBase64, "base64")); } catch (error) { const details = error as { cause?: unknown; code?: unknown; errno?: unknown; sqlState?: unknown; message?: unknown }; const cause = details.cause as { code?: unknown; errno?: unknown; sqlState?: unknown; message?: unknown } | undefined; console.error("[youths.importWorkbook] failed", { code: cause?.code ?? details.code, errno: cause?.errno ?? details.errno, sqlState: cause?.sqlState ?? details.sqlState, message: cause?.message ?? details.message }); throw new TRPCError({ code: "BAD_REQUEST", message: formatWorkbookImportError(error) }); } }),
     uploadPhoto: adminProcedure.input(profilePhotoInput).mutation(async ({ input }) => { const db = await getDb(); if (!db) throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" }); const [youth] = await db.select({ id: youths.id }).from(youths).where(eq(youths.id, input.id)).limit(1); if (!youth) throw new TRPCError({ code: "NOT_FOUND", message: "Jovem não encontrado." }); const uploaded = await saveProfilePhoto(input.id, input.dataBase64, input.contentType, "youth"); await db.update(youths).set({ photoUrl: uploaded.url }).where(eq(youths.id, input.id)); return uploaded; }),
   }),
   discipulators: router({
