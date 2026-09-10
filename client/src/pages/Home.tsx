@@ -43,6 +43,7 @@ import {
   ClipboardCheck,
   Clock3,
   HeartHandshake,
+  Loader2,
   MessageCircle,
   Search,
   Send,
@@ -117,6 +118,7 @@ export default function Home() {
   const [reportYouthId, setReportYouthId] = useState("");
   const [lowFrequencyThreshold, setLowFrequencyThreshold] = useState("60");
   const [maxConsecutiveAbsences, setMaxConsecutiveAbsences] = useState("2");
+  const [isReadingYouthImport, setIsReadingYouthImport] = useState(false);
   const dashboard = trpc.dashboard.useQuery(undefined, {
     enabled: Boolean(user),
   });
@@ -260,10 +262,14 @@ export default function Home() {
   });
   const importYouthWorkbook = trpc.youths.importWorkbook.useMutation({
     onSuccess: result => {
+      setIsReadingYouthImport(false);
       toast.success(`${result.created} criados, ${result.updated} atualizados, ${result.errors.length} com erro.`);
       youthsQuery.refetch();
     },
-    onError: error => toast.error(error.message),
+    onError: error => {
+      setIsReadingYouthImport(false);
+      toast.error(error.message);
+    },
   });
   const uploadYouthPhoto = trpc.youths.uploadPhoto.useMutation({
     onSuccess: () => { toast.success("Foto do jovem atualizada."); youthsQuery.refetch(); },
@@ -539,6 +545,8 @@ export default function Home() {
                 }
               }}
               onImport={(file: File) => {
+                importYouthWorkbook.reset();
+                setIsReadingYouthImport(true);
                 const reader = new FileReader();
                 reader.onload = () => {
                   const bytes = new Uint8Array(reader.result as ArrayBuffer);
@@ -549,8 +557,14 @@ export default function Home() {
                   }
                   importYouthWorkbook.mutate({ fileBase64: btoa(binary) });
                 };
+                reader.onerror = () => {
+                  setIsReadingYouthImport(false);
+                  toast.error("Não foi possível ler o arquivo selecionado.");
+                };
                 reader.readAsArrayBuffer(file);
               }}
+              importingYouthWorkbook={isReadingYouthImport || importYouthWorkbook.isPending}
+              youthWorkbookImportResult={importYouthWorkbook.data}
             />
           )}
           {page === "discipuladores" && (
@@ -1111,6 +1125,8 @@ function YouthPage({
   canRemove,
   onRemove,
   onImport,
+  importingYouthWorkbook,
+  youthWorkbookImportResult,
 }: any) {
   return (
     <Card className="border-0 bg-white shadow-[0_8px_30px_rgba(26,34,47,0.04)]">
@@ -1125,15 +1141,18 @@ function YouthPage({
             </p>
           </div>
           <div className="flex w-full flex-col gap-2 sm:w-auto sm:flex-row">
-            <label className="inline-flex cursor-pointer items-center justify-center rounded-full border border-[#dfe3e7] bg-white px-4 py-2 text-sm font-medium">
-              <span>Importar XLSX</span>
+            <label className={`inline-flex items-center justify-center rounded-full border border-[#dfe3e7] bg-white px-4 py-2 text-sm font-medium ${importingYouthWorkbook ? "cursor-wait opacity-60" : "cursor-pointer"}`}>
+              {importingYouthWorkbook ? <Loader2 className="mr-2 h-4 w-4 animate-spin text-[#a16d3e]" /> : null}
+              <span>{importingYouthWorkbook ? "Importando..." : "Importar XLSX"}</span>
               <input
                 type="file"
                 accept=".xlsx,.xls,.csv,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 className="hidden"
+                disabled={importingYouthWorkbook}
                 onChange={event => {
                   const file = event.target.files?.[0];
-                  if (file) onImport(file);
+                  if (file && !importingYouthWorkbook) onImport(file);
+                  event.currentTarget.value = "";
                 }}
               />
             </label>
@@ -1143,6 +1162,26 @@ function YouthPage({
             />
           </div>
         </div>
+        {importingYouthWorkbook ? (
+          <div className="mt-4 flex items-start gap-3 rounded-xl border border-[#ead7bf] bg-[#fffaf3] px-4 py-3 text-sm text-[#765633]" role="status" aria-live="polite">
+            <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin" />
+            <div>
+              <p className="font-medium">Importação em andamento</p>
+              <p className="mt-0.5 text-[#9a7957]">O arquivo está sendo validado e processado. Não feche esta página.</p>
+            </div>
+          </div>
+        ) : youthWorkbookImportResult ? (
+          <div className="mt-4 flex items-start gap-3 rounded-xl border border-emerald-200 bg-emerald-50 px-4 py-3 text-sm text-emerald-800" role="status" aria-live="polite">
+            <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0" />
+            <div>
+              <p className="font-medium">Importação concluída</p>
+              <p className="mt-0.5 text-emerald-700">
+                {youthWorkbookImportResult.created} criados, {youthWorkbookImportResult.updated} atualizados
+                {youthWorkbookImportResult.photosDownloaded ? ` e ${youthWorkbookImportResult.photosDownloaded} fotos processadas.` : "."}
+              </p>
+            </div>
+          </div>
+        ) : null}
         <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap">
           <div className="relative w-full min-w-0 flex-1 sm:min-w-[240px]">
             <Search className="absolute left-3 top-3 h-4 w-4 text-[#9ba2ab]" />

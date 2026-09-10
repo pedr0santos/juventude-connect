@@ -3,7 +3,7 @@
 // Downloads return /manus-storage/{key} paths served via 307 redirect.
 
 import { ENV } from "./_core/env";
-import { GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
+import { DeleteObjectCommand, GetObjectCommand, PutObjectCommand, S3Client } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 
 function getForgeConfig() {
@@ -98,6 +98,30 @@ export async function storagePut(
 export async function storageGet(relKey: string): Promise<{ key: string; url: string }> {
   const key = normalizeKey(relKey);
   return { key, url: `/manus-storage/${key}` };
+}
+
+export async function storageDelete(relKey: string): Promise<void> {
+  const key = normalizeKey(relKey);
+  const s3Client = getS3Client();
+  if (s3Client) {
+    await s3Client.send(new DeleteObjectCommand({ Bucket: ENV.s3Bucket, Key: key }));
+    return;
+  }
+
+  const { forgeUrl, forgeKey } = getForgeConfig();
+  const presignUrl = new URL("v1/storage/presign/delete", forgeUrl + "/");
+  presignUrl.searchParams.set("path", key);
+  const presignResp = await fetch(presignUrl, {
+    headers: { Authorization: `Bearer ${forgeKey}` },
+  });
+  if (!presignResp.ok) {
+    const msg = await presignResp.text().catch(() => presignResp.statusText);
+    throw new Error(`Storage delete presign failed (${presignResp.status}): ${msg}`);
+  }
+  const { url } = (await presignResp.json()) as { url?: string };
+  if (!url) throw new Error("Forge returned empty delete URL");
+  const deleteResp = await fetch(url, { method: "DELETE" });
+  if (!deleteResp.ok) throw new Error(`Storage delete from S3 failed (${deleteResp.status})`);
 }
 
 export async function storageGetSignedUrl(relKey: string): Promise<string> {

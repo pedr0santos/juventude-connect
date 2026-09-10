@@ -2,9 +2,9 @@ import * as XLSX from "xlsx";
 import { inflateRawSync } from "node:zlib";
 import { and, eq } from "drizzle-orm";
 import { discipulators, youths } from "../drizzle/schema";
-import { calendarDate, todayCalendarDate } from "@shared/calendar";
+import { calendarDate, calendarDateValue, todayCalendarDate } from "@shared/calendar";
 import { normalizeImportText } from "./importRules";
-import { storagePut } from "./storage";
+import { storageDelete, storagePut } from "./storage";
 
 type ImportResult = { created: number; updated: number; duplicates: number; errors: Array<{ row: number; message: string }>; withoutPhoto: number; withoutBirthDate: number; photosDownloaded: number };
 
@@ -23,14 +23,24 @@ function excelSerialDate(serial: number) {
   const milliseconds = Date.UTC(1899, 11, 30) + wholeDays * 24 * 60 * 60 * 1000;
   const date = new Date(milliseconds);
   if (!Number.isFinite(milliseconds) || Number.isNaN(date.getTime())) throw new Error("data de nascimento inválida");
-  return calendarDate(`${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`);
+  return validatedCalendarDate(`${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, "0")}-${String(date.getUTCDate()).padStart(2, "0")}`);
+}
+
+function validatedCalendarDate(value: string) {
+  const normalized = calendarDate(value);
+  const [year, month, day] = normalized.split("-").map(Number);
+  const date = new Date(Date.UTC(year, month - 1, day));
+  if (date.getUTCFullYear() !== year || date.getUTCMonth() !== month - 1 || date.getUTCDate() !== day) {
+    throw new Error("data de nascimento inválida");
+  }
+  return normalized;
 }
 
 export function parseBirthDate(value: string) {
   if (!value) return "";
-  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return calendarDate(value);
+  if (/^\d{4}-\d{2}-\d{2}$/.test(value)) return validatedCalendarDate(value);
   const brazilian = value.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
-  if (brazilian) return calendarDate(`${brazilian[3]}-${brazilian[2].padStart(2, "0")}-${brazilian[1].padStart(2, "0")}`);
+  if (brazilian) return validatedCalendarDate(`${brazilian[3]}-${brazilian[2].padStart(2, "0")}-${brazilian[1].padStart(2, "0")}`);
   const serial = Number(value);
   if (Number.isFinite(serial) && serial > 1) {
     return excelSerialDate(serial);
@@ -40,6 +50,13 @@ export function parseBirthDate(value: string) {
 
 function phone(value: string) {
   return value.replace(/\D/g, "");
+}
+
+function storedDateKey(value: unknown) {
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    return `${value.getUTCFullYear()}-${String(value.getUTCMonth() + 1).padStart(2, "0")}-${String(value.getUTCDate()).padStart(2, "0")}`;
+  }
+  return String(value ?? "").slice(0, 10);
 }
 
 type ZipEntry = { name: string; data: Buffer };
@@ -151,7 +168,12 @@ function googleDriveFileId(value: string) {
   }
 }
 
-async function downloadDrivePhoto(value: string, youthName: string, rowNumber: number) {
+type StorageAdapter = {
+  put: typeof storagePut;
+  delete: typeof storageDelete;
+};
+
+async function downloadDrivePhoto(value: string, youthName: string, rowNumber: number, storage: StorageAdapter) {
   const fileId = googleDriveFileId(value);
   if (!fileId) return null;
   const response = await fetch(`https://drive.usercontent.google.com/download?id=${encodeURIComponent(fileId)}&export=download&confirm=t`);
@@ -160,10 +182,10 @@ async function downloadDrivePhoto(value: string, youthName: string, rowNumber: n
   if (!contentType.startsWith("image/")) throw new Error("o link do Google Drive não retornou uma imagem pública");
   const data = Buffer.from(await response.arrayBuffer());
   if (data.length > 8 * 1024 * 1024) throw new Error("a foto excede o limite de 8 MB");
-  return storagePut(`profiles/youths/import-${rowNumber}-${normalizeImportText(youthName).replace(/ /g, "-")}`, data, contentType);
+  return storage.put(`profiles/youths/import-${rowNumber}-${normalizeImportText(youthName).replace(/ /g, "-")}`, data, contentType);
 }
 
-export async function importYouthsWorkbook(db: any, buffer: Buffer): Promise<ImportResult> {
+export async function importYouthsWorkbook(db: any, buffer: Buffer, storage: StorageAdapter = { put: storagePut, delete: storageDelete }): Promise<ImportResult> {
   const workbook = XLSX.read(buffer, { type: "buffer", cellDates: false });
   const sheet = workbook.Sheets[workbook.SheetNames[0]];
   if (!sheet) throw new Error("A planilha não possui uma aba válida.");
@@ -171,66 +193,88 @@ export async function importYouthsWorkbook(db: any, buffer: Buffer): Promise<Imp
   const embeddedPhotos = embeddedPhotosByRow(buffer);
   const linkedPhotos = linkedPhotosByRow(buffer);
   const result: ImportResult = { created: 0, updated: 0, duplicates: 0, errors: [], withoutPhoto: 0, withoutBirthDate: 0, photosDownloaded: 0 };
+  const uploadedKeys: string[] = [];
+  const preparedRows: Array<{ rowNumber: number; name: string; whatsapp: string; birthDate: string; photo: string; embeddedPhoto?: ZipEntry }> = [];
+  const validationErrors: Array<{ row: number; message: string }> = [];
+  for (let index = 0; index < rows.length; index += 1) {
+    const row = rows[index];
+    const rowNumber = index + 2;
+    const name = field(row, ["nome", "nome completo", "jovem"]);
+    const whatsapp = phone(field(row, ["telefone", "whatsapp", "celular"]));
+    const birthValue = field(row, ["data de nascimento", "nascimento", "birthdate"]);
+    const photo = linkedPhotos.get(rowNumber) ?? field(row, ["foto", "photo", "photo url"]);
+    if (!name) {
+      validationErrors.push({ row: rowNumber, message: "nome ausente" });
+      continue;
+    }
+    let birthDate = "";
+    try {
+      birthDate = parseBirthDate(birthValue);
+    } catch (error) {
+      validationErrors.push({ row: rowNumber, message: String(error instanceof Error ? error.message : error) });
+      continue;
+    }
+    preparedRows.push({ rowNumber, name, whatsapp, birthDate, photo, embeddedPhoto: embeddedPhotos.get(index + 1) });
+  }
+  if (validationErrors.length) {
+    throw new Error(`Importação cancelada: ${validationErrors.map(error => `linha ${error.row}: ${error.message}`).join("; ")}`);
+  }
   const existing = await db.select().from(youths);
   const byPhone = new Map<string, any[]>();
   const byPerson = new Map<string, any[]>();
   for (const youth of existing) {
     const normalizedPhone = phone(youth.whatsapp ?? "");
     if (normalizedPhone) byPhone.set(normalizedPhone, [...(byPhone.get(normalizedPhone) ?? []), youth]);
-    const personKey = `${normalizeImportText(youth.name)}:${String(youth.birthDate).slice(0, 10)}`;
+    const personKey = `${normalizeImportText(youth.name)}:${storedDateKey(youth.birthDate)}`;
     byPerson.set(personKey, [...(byPerson.get(personKey) ?? []), youth]);
   }
-  await db.transaction(async (tx: any) => {
-    for (let index = 0; index < rows.length; index += 1) {
-      const row = rows[index];
-      const rowNumber = index + 2;
-      const name = field(row, ["nome", "nome completo", "jovem"]);
-      const whatsapp = phone(field(row, ["telefone", "whatsapp", "celular"]));
-      const birthValue = field(row, ["data de nascimento", "nascimento", "birthdate"]);
-      const photo = linkedPhotos.get(rowNumber) ?? field(row, ["foto", "photo", "photo url"]);
-      if (!name) { result.errors.push({ row: rowNumber, message: "nome ausente" }); continue; }
-      let birthDate = "";
-      try { birthDate = parseBirthDate(birthValue); } catch (error) { result.errors.push({ row: rowNumber, message: String(error instanceof Error ? error.message : error) }); continue; }
-      if (!birthDate) result.withoutBirthDate += 1;
-      let photoUrl = "";
-      const embeddedPhoto = embeddedPhotos.get(index + 1);
-      if (embeddedPhoto) {
-        try {
+  try {
+    await db.transaction(async (tx: any) => {
+      for (const prepared of preparedRows) {
+        const { rowNumber, name, whatsapp, birthDate, photo, embeddedPhoto } = prepared;
+        if (!birthDate) result.withoutBirthDate += 1;
+        let photoUrl = "";
+        if (embeddedPhoto) {
           const contentType = embeddedPhoto.name.toLowerCase().endsWith(".png") ? "image/png" : embeddedPhoto.name.toLowerCase().endsWith(".webp") ? "image/webp" : "image/jpeg";
-          const uploaded = await storagePut(`profiles/youths/import-${rowNumber}-${normalizeImportText(name).replace(/ /g, "-")}`, embeddedPhoto.data, contentType);
+          const uploaded = await storage.put(`profiles/youths/import-${rowNumber}-${normalizeImportText(name).replace(/ /g, "-")}`, embeddedPhoto.data, contentType);
+          uploadedKeys.push(uploaded.key);
           photoUrl = uploaded.url;
           result.photosDownloaded += 1;
-        } catch (error) {
-          result.errors.push({ row: rowNumber, message: `foto embutida: ${error instanceof Error ? error.message : String(error)}` });
+        }
+        if (photo) {
+          const uploaded = await downloadDrivePhoto(photo, name, rowNumber, storage);
+          if (uploaded) {
+            uploadedKeys.push(uploaded.key);
+            if (!photoUrl) photoUrl = uploaded.url;
+            result.photosDownloaded += 1;
+          } else if (!photoUrl && (photo.startsWith("http://") || photo.startsWith("https://"))) {
+            photoUrl = photo;
+          }
+        }
+        if (!photoUrl) result.withoutPhoto += 1;
+        const candidates = whatsapp ? byPhone.get(whatsapp) ?? [] : byPerson.get(`${normalizeImportText(name)}:${birthDate}`) ?? [];
+        if (candidates.length > 1) throw new Error(`Importação cancelada: linha ${rowNumber}: registro ambíguo`);
+        const values = { name, whatsapp, ...(birthDate ? { birthDate: calendarDateValue(birthDate) } : {}), ...(photoUrl ? { photoUrl } : {}), discipleshipStartDate: calendarDateValue(todayCalendarDate()), relationshipStatus: "active" as const };
+        if (candidates[0]) {
+          await tx.update(youths).set(values).where(eq(youths.id, candidates[0].id));
+          result.updated += 1;
+          result.duplicates += 1;
+        } else {
+          if (!birthDate) throw new Error(`Importação cancelada: linha ${rowNumber}: data de nascimento ausente; cadastro não criado`);
+          const [inserted] = await tx.insert(youths).values({ ...values, discipulatorId: null });
+          const created = { id: inserted.insertId, ...values };
+          result.created += 1;
+          if (whatsapp) byPhone.set(whatsapp, [created]);
+          byPerson.set(`${normalizeImportText(name)}:${birthDate}`, [created]);
         }
       }
-      if (photo) {
-        try {
-          const uploaded = await downloadDrivePhoto(photo, name, rowNumber);
-          if (!photoUrl) photoUrl = uploaded?.url ?? (photo.startsWith("http://") || photo.startsWith("https://") ? photo : "");
-          if (uploaded && !embeddedPhoto) result.photosDownloaded += 1;
-        } catch (error) {
-          result.errors.push({ row: rowNumber, message: `foto: ${error instanceof Error ? error.message : String(error)}` });
-        }
-      }
-      if (!photoUrl) result.withoutPhoto += 1;
-      const candidates = whatsapp ? byPhone.get(whatsapp) ?? [] : byPerson.get(`${normalizeImportText(name)}:${birthDate}`) ?? [];
-      if (candidates.length > 1) { result.errors.push({ row: rowNumber, message: "registro ambíguo; nenhum cadastro foi alterado" }); continue; }
-      const values = { name, whatsapp, ...(birthDate ? { birthDate } : {}), ...(photoUrl ? { photoUrl } : {}), discipleshipStartDate: todayCalendarDate(), relationshipStatus: "active" as const };
-      if (candidates[0]) {
-        await tx.update(youths).set(values).where(eq(youths.id, candidates[0].id));
-        result.updated += 1;
-        result.duplicates += 1;
-      } else {
-        if (!birthDate) { result.errors.push({ row: rowNumber, message: "data de nascimento ausente; cadastro não criado" }); continue; }
-        const [inserted] = await tx.insert(youths).values({ ...values, discipulatorId: null });
-        const created = { id: inserted.insertId, ...values };
-        result.created += 1;
-        if (whatsapp) byPhone.set(whatsapp, [created]);
-        byPerson.set(`${normalizeImportText(name)}:${birthDate}`, [created]);
-      }
-    }
-  });
+    });
+  } catch (error) {
+    const cleanup = await Promise.allSettled(uploadedKeys.map(key => storage.delete(key)));
+    const cleanupFailures = cleanup.filter(item => item.status === "rejected");
+    if (cleanupFailures.length) console.error("[workbook import] storage cleanup failed", cleanupFailures.map(item => item.status === "rejected" ? item.reason : item));
+    throw error;
+  }
   return result;
 }
 
