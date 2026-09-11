@@ -59,6 +59,11 @@ function storedDateKey(value: unknown) {
   return String(value ?? "").slice(0, 10);
 }
 
+function importRowError(rowNumber: number, youthName: string, error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return new Error(`Importação cancelada: linha ${rowNumber}, jovem "${youthName}": ${message}`, { cause: error });
+}
+
 type ZipEntry = { name: string; data: Buffer };
 
 function readZipEntries(buffer: Buffer) {
@@ -235,20 +240,30 @@ export async function importYouthsWorkbook(db: any, buffer: Buffer, storage: Sto
         if (!birthDate) result.withoutBirthDate += 1;
         let photoUrl = "";
         if (embeddedPhoto) {
-          const contentType = embeddedPhoto.name.toLowerCase().endsWith(".png") ? "image/png" : embeddedPhoto.name.toLowerCase().endsWith(".webp") ? "image/webp" : "image/jpeg";
-          const uploaded = await storage.put(`profiles/youths/import-${rowNumber}-${normalizeImportText(name).replace(/ /g, "-")}`, embeddedPhoto.data, contentType);
-          uploadedKeys.push(uploaded.key);
-          photoUrl = uploaded.url;
-          result.photosDownloaded += 1;
+          try {
+            const contentType = embeddedPhoto.name.toLowerCase().endsWith(".png") ? "image/png" : embeddedPhoto.name.toLowerCase().endsWith(".webp") ? "image/webp" : "image/jpeg";
+            const uploaded = await storage.put(`profiles/youths/import-${rowNumber}-${normalizeImportText(name).replace(/ /g, "-")}`, embeddedPhoto.data, contentType);
+            uploadedKeys.push(uploaded.key);
+            photoUrl = uploaded.url;
+            result.photosDownloaded += 1;
+          } catch (error) {
+            console.error("[workbook import] embedded photo failed", { row: rowNumber, youthName: name, message: error instanceof Error ? error.message : String(error) });
+            throw importRowError(rowNumber, name, error);
+          }
         }
         if (photo) {
-          const uploaded = await downloadDrivePhoto(photo, name, rowNumber, storage);
-          if (uploaded) {
-            uploadedKeys.push(uploaded.key);
-            if (!photoUrl) photoUrl = uploaded.url;
-            result.photosDownloaded += 1;
-          } else if (!photoUrl && (photo.startsWith("http://") || photo.startsWith("https://"))) {
-            photoUrl = photo;
+          try {
+            const uploaded = await downloadDrivePhoto(photo, name, rowNumber, storage);
+            if (uploaded) {
+              uploadedKeys.push(uploaded.key);
+              if (!photoUrl) photoUrl = uploaded.url;
+              result.photosDownloaded += 1;
+            } else if (!photoUrl && (photo.startsWith("http://") || photo.startsWith("https://"))) {
+              photoUrl = photo;
+            }
+          } catch (error) {
+            console.error("[workbook import] linked photo failed", { row: rowNumber, youthName: name, message: error instanceof Error ? error.message : String(error) });
+            throw importRowError(rowNumber, name, error);
           }
         }
         if (!photoUrl) result.withoutPhoto += 1;

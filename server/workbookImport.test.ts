@@ -117,4 +117,14 @@ describe("atomic youth workbook import", () => {
     await expect(importYouthsWorkbook(db, workbookBuffer([{ Nome: "Alicia", Telefone: "31970000000", "Data de nascimento": "31/02/2008", Foto: "https://drive.google.com/file/d/abc/view" }]), storage)).rejects.toThrow("linha 2");
     expect(uploads).toBe(0);
   });
+
+  it("reports the row and youth when a Drive link is not an image", async () => {
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = async () => new Response("<html>login</html>", { status: 200, headers: { "content-type": "text/html" } });
+    try {
+      await expect(importYouthsWorkbook(fakeDb(), workbookBuffer([{ Nome: "Carla Mendes", Telefone: "31970000002", "Data de nascimento": "15/08/2005", Foto: "https://drive.google.com/file/d/abc/view" }]))).rejects.toThrow('linha 2, jovem "Carla Mendes": o link do Google Drive não retornou uma imagem pública');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
 });
